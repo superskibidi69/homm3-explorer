@@ -1850,6 +1850,104 @@ function detectFileType(data) {
 }
 
 // ============================================================
+// HotA DAT file parser (HotA.dat — creature / unit data)
+// Binary format: magic "HDAT", version 2, then N entries.
+// Each entry: name (str), foldername (str), 9-fields sentinel,
+//   data[0..8] strings, optional binary blob (data[9] as hex),
+//   data[10] int32 array.
+// ============================================================
+class HotaDat {
+    /**
+     * Parse a HotA.dat binary blob.
+     * @param {Uint8Array} bytes
+     * @param {string} [encoding='cp1252'] IANA encoding label for string fields.
+     * @returns {{ version: number, entries: object[], _rawStringBytes: Uint8Array }}
+     */
+    static parse(bytes, encoding = 'cp1252') {
+        const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        let off = 0;
+        const decoder = new TextDecoder(encoding);
+        // Collect raw bytes of all text fields for encoding detection/re-decode
+        const rawStringChunks = [];
+
+        function readI32() {
+            if (off + 4 > bytes.length) throw new Error('HotaDat: unexpected end of file at offset ' + off);
+            const v = dv.getInt32(off, true);
+            off += 4;
+            return v;
+        }
+        function readBool() {
+            if (off >= bytes.length) throw new Error('HotaDat: unexpected end of file at offset ' + off);
+            return bytes[off++] !== 0;
+        }
+        function readStr(collect = false) {
+            const len = readI32();
+            if (len < 0 || off + len > bytes.length) throw new Error('HotaDat: string len overflow at offset ' + off);
+            const raw = bytes.subarray(off, off + len);
+            if (collect && len > 0) rawStringChunks.push(raw);
+            const s = decoder.decode(raw);
+            off += len;
+            return s;
+        }
+        function readHex() {
+            const len = readI32();
+            if (len < 0 || off + len > bytes.length) throw new Error('HotaDat: blob len overflow at offset ' + off);
+            const hex = Array.from(bytes.subarray(off, off + len)).map(b => b.toString(16).padStart(2, '0')).join('');
+            off += len;
+            return hex;
+        }
+
+        const magic = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]);
+        if (magic !== 'HDAT') throw new Error(`HotaDat: bad magic "${magic}"`);
+        off = 4;
+
+        const version = readI32();
+        const count   = readI32();
+
+        const entries = [];
+        for (let i = 0; i < count; i++) {
+            const name       = readStr();       // ASCII-safe internal name
+            const foldername = readStr();       // ASCII-safe path
+            const nine       = readI32();       // always 9
+            if (nine !== 9) console.warn(`HotaDat: entry ${i} sentinel = ${nine}, expected 9`);
+
+            const fields = {};
+            for (let j = 0; j < 9; j++) fields[j] = readStr(/* collect= */ true);
+
+            const hasBlob = readBool();
+            if (hasBlob) fields[9] = readHex();
+
+            const arrLen = readI32();
+            const arr = [];
+            for (let j = 0; j < arrLen; j++) arr.push(readI32());
+            fields[10] = arr;
+
+            entries.push({ name, foldername, fields });
+        }
+
+        // Merge all string bytes for encoding detection
+        const totalLen = rawStringChunks.reduce((s, c) => s + c.length, 0);
+        const _rawStringBytes = new Uint8Array(totalLen);
+        let pos = 0;
+        for (const chunk of rawStringChunks) { _rawStringBytes.set(chunk, pos); pos += chunk.length; }
+
+        return { version, entries, _rawStringBytes };
+    }
+
+    /** Convert parsed result to pretty JSON string (UTF-8, 2-space indent). */
+    static toJson(parsed) {
+        return JSON.stringify(parsed, null, 2);
+    }
+
+    /** Check whether bytes look like a HotA DAT file (magic "HDAT"). */
+    static isHotaDat(bytes) {
+        return bytes.length >= 8 &&
+            bytes[0] === 0x48 && bytes[1] === 0x44 &&
+            bytes[2] === 0x41 && bytes[3] === 0x54; // "HDAT"
+    }
+}
+
+// ============================================================
 // File type detection helpers
 // ============================================================
 function getFileExtension(filename) {
@@ -1876,6 +1974,7 @@ function getFileCategory(filename) {
         case 'bik':
             return 'video';
         case 'msk': return 'data';
+        case 'dat': return 'data';
         case 'fnt': return 'font';
         case 'pal': return 'palette';
         case 'ifr': return 'haptic';
@@ -1897,6 +1996,7 @@ window.H3 = {
     VidFile,
     DDS,
     FNT,
+    HotaDat,
     getFileExtension,
     getFileCategory,
     FileDetectors,

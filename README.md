@@ -16,6 +16,7 @@ A pure browser-based file explorer for **Heroes of Might and Magic III** game ar
   - Audio: `.SND` archives containing WAV samples (in-browser playback)
   - Video: `.VID` archives with `.SMK` (Smacker) and `.BIK` (Bink) videos — decoded entirely in JavaScript
   - Maps / Campaigns: `.H3M` and `.H3C` - shows informations, statistics and previews
+  - Data tables: `.DAT` (HotA creature / unit data) — sortable table view, JSON export
 - **Export** any file from an archive to disk
 - **Grid / List view** toggle for file browsers
 - Works fully offline after the page has loaded
@@ -35,6 +36,7 @@ A pure browser-based file explorer for **Heroes of Might and Magic III** game ar
 | `.FNT` | Bitmap fonts (256-glyph indexed format) |
 | `.H3M` | Heroes of Might and Magic III map file |
 | `.H3C` | Heroes of Might and Magic III campaign file |
+| `.DAT` | HotA unit/creature data file (`HotA.dat`) |
 | `.EXE` | GOG installer (Inno Setup, LZMA2 / zlib) or InstallShield v5 self-extracting archive |
 | `.ISO` | Original CD image (ISO 9660, InstallShield CABs) |
 | `.SIT` | StuffIt 5 archive (Mac CD distribution); decompresses inner Toast disc image (HFS), detects VISE installer automatically |
@@ -56,7 +58,7 @@ A pure browser-based file explorer for **Heroes of Might and Magic III** game ar
 | `index.html` | Shell / entry point | MIT |
 | `style.css` | UI styles | MIT |
 | `app.js` | Application logic, UI, drag & drop, preview | MIT |
-| `parsers.js` | HoMM3 format parsers (LOD, PAK, SND, VID, DEF, PCX, D32, FNT) | MIT |
+| `parsers.js` | HoMM3 format parsers (LOD, PAK, SND, VID, DEF, PCX, D32, FNT, DAT) | MIT |
 | `innoextract.js` | GOG / Inno Setup installer extractor | MIT |
 | `isoextract.js` | ISO 9660 + InstallShield CAB extractor (based on unshield) | **LGPL-2.1-or-later** |
 | `lzma2.js` | LZMA2 decompressor (based on 7-Zip SDK by Igor Pavlov) | MIT |

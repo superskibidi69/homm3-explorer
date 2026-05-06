@@ -62,6 +62,8 @@
         textEncoding: 'auto',
         // Map / Campaign encoding: 'auto' or a specific IANA label
         mapEncoding: 'auto',
+        // HotA DAT encoding: 'auto' or a specific IANA label
+        datEncoding: 'auto',
 
         // Last text preview data for re-rendering on encoding change
         lastTextData: null,
@@ -162,6 +164,7 @@
             case 'fnt': return '🔤';
             case 'pal': return '🎨';
             case 'ifr': return '📳';
+            case 'dat': return '📊';
             case 'h3m': return '🗺️';
             case 'h3c': return '⚔️';
             case 'pak-sheet': return '🗂️';
@@ -887,6 +890,21 @@ self.onmessage = async function(e) {
                         } else {
                             toast(`Not a valid FNT file: ${file.name}`, 'error');
                         }
+                    } else if (ext === 'dat') {
+                        showLoading('Parsing HotA DAT file...');
+                        try {
+                            const parsed = H3.HotaDat.parse(data);
+                            state.standaloneFiles.set(file.name, { data, type: 'dat', parsed });
+                            state.sourceFiles.set(file.name, { data, filetype: 'HotA DAT Data' });
+                            if (!state.archive) {
+                                buildStandaloneFileList();
+                                setMode('explorer');
+                            }
+                            toast(`Loaded HotA DAT: ${file.name} (${parsed.entries.length} entries)`, 'success');
+                        } catch (err) {
+                            console.error(err);
+                            toast(`Error parsing DAT ${file.name}: ${err.message}`, 'error');
+                        }
                     } else if (ext === 'h3m') {
                         showLoading('Parsing H3M map...');
                         try {
@@ -1292,6 +1310,12 @@ self.onmessage = async function(e) {
                     showDefPreview(preview, info.parsed, file.name, info.data);
                 } else if (info.type === 'fnt') {
                     showFntPreview(preview, info.parsed, file.name, info.data);
+                } else if (info.type === 'dat') {
+                    let datParsed = info.parsed;
+                    if (state.datEncoding !== 'auto' && info.data) {
+                        try { datParsed = H3.HotaDat.parse(info.data, state.datEncoding); } catch { /* fallback */ }
+                    }
+                    showDatPreview(preview, datParsed, file.name, info.data);
                 } else if (info.type === 'map') {
                     let mapParsed = info.parsed;
                     if (state.mapEncoding !== 'auto' && info.data) {
@@ -2832,6 +2856,117 @@ self.onmessage = async function(e) {
             return `rgb(${c[0]},${c[1]},${c[2]})`;
         }
         return '#888';
+    }
+
+    // ---- HotA DAT preview ----
+    function showDatPreview(container, parsed, filename, rawData) {
+        const { version, entries } = parsed;
+
+        // Detect encoding from the raw string bytes collected during parsing
+        const detectedDatEnc = parsed._rawStringBytes?.length
+            ? detectEncoding(parsed._rawStringBytes) : 'windows-1252';
+
+        // Field labels for columns 0-8 (generic names; semantics depend on context)
+        const fieldLabels = ['0', '1 (Folder abbr.)', '2 (DEF file)', '3 (Name EN)', '4 (Name local)', '5', '6', '7', '8'];
+
+        // Determine which field indices 0-8 have any data
+        const usedTextFields = new Set();
+        const hasBlob  = entries.some(e => e.fields[9] !== undefined);
+        const hasArr   = entries.some(e => e.fields[10]?.length > 0);
+        for (const e of entries) {
+            for (let j = 0; j < 9; j++) {
+                if (e.fields[j]) usedTextFields.add(j);
+            }
+        }
+        const textCols = [...usedTextFields].sort((a,b) => a - b);
+
+        const thead = `<tr>
+            <th>#</th>
+            <th>Name</th>
+            <th>Folder / .str path</th>
+            ${textCols.map(j => `<th>Field ${fieldLabels[j] ?? j}</th>`).join('')}
+            ${hasBlob ? '<th>Blob (hex, first 16 B)</th>' : ''}
+            ${hasArr  ? '<th>Int array [10]</th>' : ''}
+        </tr>`;
+
+        // Wrap cell content with tooltip + copy button
+        function datCell(text, cls = '') {
+            if (!text) return `<td class="dat-cell${cls ? ' ' + cls : ''}"></td>`;
+            const esc = escapeHtml(text);
+            const attr = escapeAttr(text);
+            return `<td class="dat-cell${cls ? ' ' + cls : ''}" title="${attr}"><span class="dat-cell-inner"><span>${esc}</span><button class="dat-copy-btn" data-copy="${attr}" title="Copy">⎘</button></span></td>`;
+        }
+
+        const tbody = entries.map((e, i) => {
+            const textCells = textCols.map(j => datCell(e.fields[j] || '')).join('');
+            const blobFull  = e.fields[9] || '';
+            const blobDisp  = blobFull.length > 32 ? blobFull.substring(0, 32) + '…' : blobFull;
+            const blobCell  = hasBlob ? (blobFull
+                ? `<td class="dat-cell dat-hex" title="${escapeAttr(blobFull)}"><span class="dat-cell-inner"><span>${escapeHtml(blobDisp)}</span><button class="dat-copy-btn" data-copy="${escapeAttr(blobFull)}" title="Copy">⎘</button></span></td>`
+                : `<td class="dat-cell dat-hex"></td>`) : '';
+            const arrStr   = JSON.stringify(e.fields[10]);
+            const arrCell  = hasArr ? datCell(arrStr) : '';
+            return `<tr>
+                <td class="dat-idx">${i}</td>
+                ${datCell(e.name, 'dat-name-cell')}
+                ${datCell(e.foldername)}
+                ${textCells}${blobCell}${arrCell}
+            </tr>`;
+        }).join('');
+
+        container.innerHTML = `
+            <div class="preview-wrapper">
+                <div class="preview-header">
+                    <span class="preview-filename">${escapeHtml(filename)}</span>
+                    <div class="preview-meta">
+                        <span>HotA DAT v${version}</span>
+                        <span>${entries.length} entries</span>
+                        ${rawData ? `<span>${formatSize(rawData.length)}</span>` : ''}
+                    </div>
+                    <div class="preview-toolbar">
+                        ${rawData ? buildEncodingSelectHtml(detectedDatEnc, state.datEncoding, 'dat-encoding-select') : ''}
+                        <button id="dat-export-json" title="Export as JSON">⬇️ JSON</button>
+                        ${rawData ? `<button id="dat-export-raw" title="Export original .dat file">⬇️ DAT</button>` : ''}
+                    </div>
+                </div>
+                <div class="dat-table-wrap">
+                    <table class="dat-table">
+                        <thead>${thead}</thead>
+                        <tbody>${tbody}</tbody>
+                    </table>
+                </div>
+            </div>`;
+
+        container.querySelector('#dat-export-json').addEventListener('click', () => {
+            const json = H3.HotaDat.toJson(parsed);
+            exportBlob(new Blob([json], { type: 'application/json' }), filename.replace(/\.dat$/i, '.json'));
+        });
+        // Delegated copy handler for all copy buttons in the table
+        container.querySelector('.dat-table')?.addEventListener('click', (e) => {
+            const btn = e.target.closest('.dat-copy-btn');
+            if (!btn) return;
+            e.stopPropagation();
+            const text = btn.dataset.copy;
+            navigator.clipboard.writeText(text).then(() => {
+                const orig = btn.textContent;
+                btn.textContent = '✓';
+                btn.classList.add('dat-copy-btn--ok');
+                setTimeout(() => { btn.textContent = orig; btn.classList.remove('dat-copy-btn--ok'); }, 1200);
+            }).catch(() => {});
+        });
+        if (rawData) {
+            container.querySelector('#dat-export-raw')?.addEventListener('click', () => {
+                exportBlob(new Blob([rawData]), filename);
+            });
+            container.querySelector('#dat-encoding-select')?.addEventListener('change', (e) => {
+                state.datEncoding = e.target.value;
+                const enc = state.datEncoding === 'auto' ? detectedDatEnc : state.datEncoding;
+                try {
+                    const reparsed = H3.HotaDat.parse(rawData, enc);
+                    showDatPreview(container, reparsed, filename, rawData);
+                } catch { /* ignore */ }
+            });
+        }
     }
 
     function showH3MPreview(container, map, filename, rawData) {

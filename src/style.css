@@ -2303,3 +2303,71 @@ canvas.img-border {
 .map-artifact-table tr:hover td {
     background: var(--surface-hover, #1f2937);
 }
+
+/* ---- HotA DAT table ---- */
+.dat-table-wrap {
+    overflow: auto;
+    max-height: calc(100vh - 140px);
+    flex: 1;
+}
+.dat-table {
+    border-collapse: collapse;
+    font-size: 12px;
+    width: max-content;
+    min-width: 100%;
+}
+.dat-table th {
+    background: var(--surface-alt, #1c2026);
+    color: var(--text-secondary);
+    font-weight: 600;
+    text-align: left;
+    padding: 5px 10px;
+    border-bottom: 1px solid var(--border, #30363d);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    white-space: nowrap;
+}
+.dat-table td {
+    padding: 3px 10px;
+    border-bottom: 1px solid var(--border-subtle, #21262d);
+    color: var(--text-primary);
+    vertical-align: top;
+}
+.dat-table tr:hover td {
+    background: var(--surface-hover, #1f2937);
+}
+.dat-idx { color: var(--text-muted); font-family: monospace; text-align: right; }
+.dat-name-cell { font-family: monospace; white-space: nowrap; }
+.dat-name-cell .dat-cell-inner { color: var(--accent, #58a6ff); }
+.dat-cell { max-width: 260px; overflow: hidden; white-space: nowrap; position: relative; }
+.dat-cell-inner {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    overflow: hidden;
+}
+.dat-cell-inner > :first-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+}
+.dat-copy-btn {
+    display: none;
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0 2px;
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1;
+    border-radius: 3px;
+    opacity: 0.7;
+}
+.dat-copy-btn:hover, .dat-copy-btn--ok { color: var(--accent, #58a6ff); opacity: 1; }
+.dat-copy-btn--ok { color: #3fb950 !important; }
+.dat-table td:hover .dat-copy-btn { display: inline-flex; align-items: center; }
+.dat-hex  { font-family: monospace; color: var(--text-muted); font-size: 11px; }
