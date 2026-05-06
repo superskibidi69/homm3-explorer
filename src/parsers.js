@@ -1850,6 +1850,105 @@ function detectFileType(data) {
 }
 
 // ============================================================
+// ZIP Archive — browse any .zip as a file archive
+// Supports stored (method 0) and deflated (method 8) entries.
+// Uses pako.inflateRaw (already loaded via CDN) for DEFLATE.
+// ============================================================
+class ZipFile {
+    constructor() {
+        this._buffer = null;
+        this._entries = []; // { name, compMethod, compSize, uncompSize, dataOffset }
+    }
+
+    static async open(data) {
+        const z = new ZipFile();
+        z._buffer = data;
+        z._parseCentralDirectory(data);
+        return z;
+    }
+
+    // ---- Parse central directory (fast path via EOCD) ----
+    _parseCentralDirectory(data) {
+        const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+
+        // Search for EOCD record (PK\x05\x06) starting near end of file.
+        // EOCD is at least 22 bytes; allow up to 64 KiB comment.
+        const maxSearch = Math.min(data.length, 65536 + 22);
+        let eocdOff = -1;
+        for (let i = data.length - 22; i >= data.length - maxSearch; i--) {
+            if (data[i] === 0x50 && data[i+1] === 0x4b &&
+                data[i+2] === 0x05 && data[i+3] === 0x06) {
+                eocdOff = i;
+                break;
+            }
+        }
+        if (eocdOff < 0) throw new Error('ZipFile: EOCD not found — not a valid ZIP');
+
+        const cdCount  = dv.getUint16(eocdOff + 8,  true);
+        let   cdOffset = dv.getUint32(eocdOff + 16, true);
+        // ZIP64: if markers present use ZIP64 EOCD (not implemented here; covers 99% of ZIPs)
+
+        this._entries = [];
+        let off = cdOffset;
+        for (let i = 0; i < cdCount; i++) {
+            if (off + 46 > data.length) break;
+            const sig = dv.getUint32(off, true);
+            if (sig !== 0x02014b50) break; // PK\x01\x02
+
+            const compMethod  = dv.getUint16(off + 10, true);
+            const compSize    = dv.getUint32(off + 20, true);
+            const uncompSize  = dv.getUint32(off + 24, true);
+            const nameLen     = dv.getUint16(off + 28, true);
+            const extraLen    = dv.getUint16(off + 30, true);
+            const commentLen  = dv.getUint16(off + 32, true);
+            const localOffset = dv.getUint32(off + 42, true);
+            const name = new TextDecoder('utf-8').decode(data.subarray(off + 46, off + 46 + nameLen));
+
+            // Skip directories
+            if (!name.endsWith('/') && uncompSize > 0 || (!name.endsWith('/') && compSize > 0)) {
+                // Resolve actual data offset from local file header
+                const localNameLen  = dv.getUint16(localOffset + 26, true);
+                const localExtraLen = dv.getUint16(localOffset + 28, true);
+                const dataOffset = localOffset + 30 + localNameLen + localExtraLen;
+                this._entries.push({ name, compMethod, compSize, uncompSize, dataOffset });
+            }
+
+            off += 46 + nameLen + extraLen + commentLen;
+        }
+    }
+
+    getFilelist() {
+        return this._entries.map(e => e.name);
+    }
+
+    async getFile(selectedFilename) {
+        const entry = this._entries.find(e => e.name === selectedFilename);
+        if (!entry) {
+            console.warn('ZipFile: file not found:', selectedFilename);
+            return null;
+        }
+        const raw = this._buffer.subarray(entry.dataOffset, entry.dataOffset + entry.compSize);
+        if (entry.compMethod === 0) {
+            // Stored — return as-is
+            return raw.slice();
+        } else if (entry.compMethod === 8) {
+            // Deflated — decompress with pako
+            return pako.inflateRaw(raw);
+        } else {
+            throw new Error(`ZipFile: unsupported compression method ${entry.compMethod} for "${entry.name}"`);
+        }
+    }
+
+    /** Check whether data starts with the ZIP local file header or EOCD magic. */
+    static isZip(data) {
+        if (data.length < 4) return false;
+        // PK\x03\x04 (local header) or PK\x05\x06 (EOCD — empty zip)
+        return data[0] === 0x50 && data[1] === 0x4b &&
+               (data[2] === 0x03 || data[2] === 0x05);
+    }
+}
+
+// ============================================================
 // HotA DAT file parser (HotA.dat — creature / unit data)
 // Binary format: magic "HDAT", version 2, then N entries.
 // Each entry: name (str), foldername (str), 9-fields sentinel,
@@ -1996,6 +2095,7 @@ window.H3 = {
     VidFile,
     DDS,
     FNT,
+    ZipFile,
     HotaDat,
     getFileExtension,
     getFileCategory,

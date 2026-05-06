@@ -165,6 +165,7 @@
             case 'pal': return '🎨';
             case 'ifr': return '📳';
             case 'dat': return '📊';
+            case 'zip': return '📦';
             case 'h3m': return '🗺️';
             case 'h3c': return '⚔️';
             case 'pak-sheet': return '🗂️';
@@ -866,6 +867,9 @@ self.onmessage = async function(e) {
                         updateStandaloneUI();
                         setMode('explorer');
                         toast(`Loaded ${file.name} (${state.fileList.length} files)`, 'success');
+                    } else if (ext === 'zip') {
+                        await processZipFile(file.name, data);
+                        continue;
                     } else if (ext === 'd32') {
                         showLoading('Parsing D32 file...');
                         const def = H3.DefFile.open(data);
@@ -4857,22 +4861,119 @@ self.onmessage = async function(e) {
     // Register an extracted game file (LOD/SND/VID) into state
     async function registerGameFile(name, data, source) {
         const ext = name.split('.').pop().toLowerCase();
-        const displayName = name + ' (' + source + ')';
+        const basename = name.includes('/') ? name.split('/').pop() : name;
+        const displayName = basename + ' (' + source + ')';
 
-        if (ext === 'lod') {
+        if (ext === 'lod' || ext === 'pac') {
             const archive = await H3.LodFile.open(data);
             state.archives.set(displayName, { archive, type: 'lod', data });
-            state.sourceFiles.set(displayName, { data, filetype: 'LOD (' + source + ')' });
+            state.sourceFiles.set(displayName, { data, filetype: (ext === 'pac' ? 'PAC' : 'LOD') + ' (' + source + ')' });
+        } else if (ext === 'pak') {
+            const archive = await H3.PakFile.open(data);
+            state.archives.set(displayName, { archive, type: 'pak', data });
+            state.sourceFiles.set(displayName, { data, filetype: 'PAK (' + source + ')' });
         } else if (ext === 'snd') {
             const archive = await H3.SndFile.open(data);
             state.archives.set(displayName, { archive, type: 'snd', data });
             state.sourceFiles.set(displayName, { data, filetype: 'SND (' + source + ')' });
         } else if (ext === 'vid') {
-            const archive = await H3.VidFile.open(data);
+            const archive = await H3.VidFile.open(data);    
             state.archives.set(displayName, { archive, type: 'vid', data });
             state.sourceFiles.set(displayName, { data, filetype: 'VID (' + source + ')' });
+        } else if (ext === 'dat' && H3.HotaDat.isHotaDat(data)) {
+            const parsed = H3.HotaDat.parse(data);
+            state.standaloneFiles.set(displayName, { data, type: 'dat', parsed });
+            state.sourceFiles.set(displayName, { data, filetype: 'HotA DAT (' + source + ')' });
+        } else if (ext === 'h3m') {
+            try {
+                const parsed = H3Map.parseH3M(data);
+                state.standaloneFiles.set(displayName, { data, type: 'map', parsed });
+                state.sourceFiles.set(displayName, { data, filetype: 'H3M Map (' + source + ')' });
+            } catch { state.standaloneFiles.set(displayName, { data, type: ext }); }
+        } else if (ext === 'h3c') {
+            try {
+                const parsed = await H3Map.parseH3C(data);
+                state.standaloneFiles.set(displayName, { data, type: 'campaign', parsed });
+                state.sourceFiles.set(displayName, { data, filetype: 'H3C Campaign (' + source + ')' });
+            } catch { state.standaloneFiles.set(displayName, { data, type: ext }); }
         } else {
             state.standaloneFiles.set(displayName, { data, type: ext });
+        }
+    }
+
+    // ---- ZIP extraction (ISO-style: scan inner files, load recognised archives) ----
+    async function processZipFile(fileName, data) {
+        showLoading('Reading ZIP...', 0);
+        try {
+            if (!H3.ZipFile.isZip(data)) {
+                hideLoading();
+                toast('Not a valid ZIP file.', 'error');
+                return;
+            }
+
+            state.sourceFiles.set(fileName, { data, filetype: 'ZIP Archive' });
+
+            showLoading('Scanning ZIP contents...', -1);
+            const zip = await H3.ZipFile.open(data);
+            const entries = zip.getFilelist();
+
+            // Partition by interest: archives first, then standalone files
+            const ARCHIVE_EXTS = new Set(['lod', 'pac', 'pak', 'snd', 'vid']);
+            const STANDALONE_EXTS = new Set(['h3m', 'h3c', 'dat', 'def', 'pcx', 'p32', 'd32', 'fnt', 'pal', 'txt', 'xls', 'csv', 'wav', 'mp3', 'smk', 'bik', 'ifr', 'msk', 'dds']);
+
+            const archiveEntries    = entries.filter(n => ARCHIVE_EXTS.has(n.split('.').pop().toLowerCase()) && !n.endsWith('/'));
+            const standaloneEntries = entries.filter(n => STANDALONE_EXTS.has(n.split('.').pop().toLowerCase()) && !n.endsWith('/'));
+
+            const interesting = [...archiveEntries, ...standaloneEntries];
+            if (interesting.length === 0) {
+                hideLoading();
+                toast('No recognisable HoMM3 files found in ZIP.', 'error');
+                return;
+            }
+
+            let done = 0;
+            for (const entryName of interesting) {
+                const basename = entryName.includes('/') ? entryName.split('/').pop() : entryName;
+                showLoading(`Extracting ${basename}…`, done / interesting.length);
+                try {
+                    const fileData = await zip.getFile(entryName);
+                    if (fileData && fileData.length > 0) {
+                        await registerGameFile(entryName, fileData, 'ZIP');
+                    }
+                } catch (err) {
+                    console.warn('ZIP: could not extract', entryName, err);
+                }
+                done++;
+                // Yield to keep UI responsive
+                if (done % 3 === 0) await new Promise(r => requestAnimationFrame(r));
+            }
+
+            // Auto-open: prefer bitmap LOD, then first archive, then first standalone
+            const bitmapKey = [...state.archives.keys()].find(k => k.toLowerCase().includes('bitmap'));
+            const firstArchiveKey = bitmapKey || [...state.archives.keys()][0];
+            if (firstArchiveKey) {
+                const entry = state.archives.get(firstArchiveKey);
+                state.archive = entry.archive;
+                state.archiveName = firstArchiveKey;
+                state.archiveType = entry.type;
+            }
+
+            updateArchiveSelector();
+            if (state.archive) {
+                buildFileList();
+            } else {
+                buildStandaloneFileList();
+            }
+            updateStandaloneUI();
+            hideLoading();
+            setMode('explorer');
+            const noun = archiveEntries.length === 1 ? '1 archive' : `${archiveEntries.length} archives`;
+            toast(`Loaded ${noun} from ZIP (${standaloneEntries.length} extra files)`, 'success');
+
+        } catch (err) {
+            hideLoading();
+            console.error(err);
+            toast('ZIP extraction error: ' + err.message, 'error');
         }
     }
 
