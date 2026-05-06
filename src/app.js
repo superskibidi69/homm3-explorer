@@ -936,16 +936,60 @@ self.onmessage = async function(e) {
     // ---- Build file list from LOD ----
     function buildFileList() {
         const list = state.archive.getFilelist();
+        const isHota18 = state.archive.isHota18;
         state.fileList = list.map(name => {
             const ext = H3.getFileExtension(name);
             const category = H3.getFileCategory(name);
             // SND archives contain wav entries without file extensions
             const isAudio = (state.archiveType === 'snd' && !ext) || ext === 'mp3';
-            return { name, ext, category, isAudio };
+            // For HotA 1.8 LOD: sniff uncompressed entries immediately
+            let detectedExt = ext, detectedCategory = category, detectedDesc = '';
+            if (isHota18 && !ext && state.archive.peekBytesSync) {
+                const peek = state.archive.peekBytesSync(name, 64);
+                if (peek && !peek.isCompressed) {
+                    const det = H3.detectFileType(peek.bytes);
+                    detectedExt = det.ext;
+                    detectedCategory = det.category;
+                    detectedDesc = det.description;
+                } else if (peek && peek.isCompressed) {
+                    detectedDesc = peek.compressionMethod === 2 ? '(LZMA)' : '(zlib)';
+                }
+            }
+            return { name, ext: detectedExt, category: detectedCategory, isAudio, detectedDesc, needsDetection: isHota18 && !detectedExt };
         });
         state.fileList.sort((a, b) => a.name.localeCompare(b.name));
         updateExtFilter();
         renderFileList();
+        // Async background detection for compressed HotA 1.8 entries
+        if (isHota18) detectHota18TypesAsync();
+    }
+
+    async function detectHota18TypesAsync() {
+        if (!state.archive?.isHota18) return;
+        const toDetect = state.fileList.filter(f => f.needsDetection);
+        if (!toDetect.length) return;
+        let changed = false;
+        const total = toDetect.length;
+        showLoading(`Detecting file types… 0/${total}`, 0);
+        for (let idx = 0; idx < toDetect.length; idx++) {
+            const f = toDetect[idx];
+            try {
+                const data = await state.archive.getFile(f.name);
+                if (!data) continue;
+                const det = H3.detectFileType(data);
+                f.ext = det.ext;
+                f.category = det.category;
+                f.detectedDesc = det.description;
+                f.needsDetection = false;
+                changed = true;
+            } catch (_) {}
+            if ((idx + 1) % 50 === 0 || idx === toDetect.length - 1) {
+                showLoading(`Detecting file types… ${idx + 1}/${total}`, (idx + 1) / total);
+                await new Promise(r => setTimeout(r, 0)); // yield to UI
+            }
+        }
+        hideLoading();
+        if (changed) { updateExtFilter(); renderFileList(); }
     }
 
     function buildPakFileList() {
@@ -1111,9 +1155,11 @@ self.onmessage = async function(e) {
                 iconDiv.style.height = state.iconSize + 'px';
 
                 // Show thumbnail for image types in grid view (lazy loaded)
-                if ((file.ext === 'pcx' || file.ext === 'p32' || file.ext === 'def') && state.archiveType === 'lod') {
+                const canThumb = (file.ext === 'pcx' || file.ext === 'p32' || file.ext === 'def') && state.archiveType === 'lod';
+                if (canThumb) {
                     iconDiv.textContent = getFileIcon(file.ext);
                     iconDiv.dataset.lazyThumb = file.name;
+                    iconDiv.dataset.lazyExt = file.ext; // store detected ext for HotA 1.8
                 } else {
                     iconDiv.textContent = file.isAudio ? '🔊' : getFileIcon(file.ext);
                 }
@@ -1147,7 +1193,7 @@ self.onmessage = async function(e) {
                             const el = entry.target;
                             const fname = el.dataset.lazyThumb;
                             if (fname) {
-                                loadThumbnail(fname, el);
+                                loadThumbnail(fname, el, el.dataset.lazyExt || undefined);
                                 delete el.dataset.lazyThumb;
                             }
                             observer.unobserve(el);
@@ -1159,7 +1205,9 @@ self.onmessage = async function(e) {
         }
     }
 
-    async function loadThumbnail(filename, container) {
+    async function loadThumbnail(filename, container, hintExt) {
+        // hintExt: detected extension (may differ from filename ext for HotA 1.8)
+        const fileExt = hintExt || H3.getFileExtension(filename);
         if (state.thumbCache.has(filename)) {
             const cached = state.thumbCache.get(filename);
             if (cached) {
@@ -1170,7 +1218,7 @@ self.onmessage = async function(e) {
                 container.textContent = '';
                 container.appendChild(c);
             } else {
-                container.textContent = getFileIcon(H3.getFileExtension(filename));
+                container.textContent = getFileIcon(fileExt);
             }
             return;
         }
@@ -1179,7 +1227,7 @@ self.onmessage = async function(e) {
             const data = await state.archive.getFile(filename);
             if (!data) { container.textContent = '❓'; return; }
 
-            const ext = H3.getFileExtension(filename);
+            const ext = fileExt;
             if ((ext === 'pcx' || ext === 'p32') && H3.PCX.isPcx(data)) {
                 const img = H3.PCX.readPcx(data);
                 if (img) {
@@ -1214,7 +1262,7 @@ self.onmessage = async function(e) {
             // ignore
         }
         state.thumbCache.set(filename, null);
-        container.textContent = getFileIcon(H3.getFileExtension(filename));
+        container.textContent = getFileIcon(fileExt);
     }
 
     // ---- Select file in explorer ----
@@ -1266,7 +1314,17 @@ self.onmessage = async function(e) {
                 hideLoading();
                 if (!data) { showPreviewError(preview, 'File not found'); return; }
 
-                const ext = file.ext;
+                // For HotA 1.8 files with no extension: detect from content
+                let ext = file.ext;
+                if (!ext && state.archive?.isHota18) {
+                    const det = H3.detectFileType(data);
+                    ext = det.ext;
+                    // Update the filelist entry for future use
+                    file.ext = ext;
+                    file.category = det.category;
+                    file.detectedDesc = det.description;
+                    file.needsDetection = false;
+                }
 
                 if ((ext === 'pcx' || ext === 'p32') && H3.PCX.isPcx(data)) {
                     const img = H3.PCX.readPcx(data);

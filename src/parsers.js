@@ -192,6 +192,29 @@ class LodFile {
         console.warn('file not found:', selectedFilename);
         return null;
     }
+
+    /**
+     * Synchronously peek at the raw (possibly compressed) bytes of a file.
+     * For uncompressed entries (csize === 0) the bytes ARE the actual content.
+     * For compressed entries the bytes are the compressed stream header.
+     * @param {string} filename
+     * @param {number} n  max bytes to return
+     * @returns {{ bytes: Uint8Array, isCompressed: boolean, compressionMethod: number|null } | null}
+     */
+    peekBytesSync(filename, n = 64) {
+        filename = filename.toLowerCase();
+        for (const f of this.files) {
+            if (f.filename !== filename) continue;
+            const isCompressed = f.csize !== 0;
+            const readLen = isCompressed ? Math.min(n, f.csize) : Math.min(n, f.size);
+            return {
+                bytes: this._buffer.slice(f.offset, f.offset + readLen),
+                isCompressed,
+                compressionMethod: f.compressionMethod ?? null,
+            };
+        }
+        return null;
+    }
 }
 
 // ============================================================
@@ -1729,6 +1752,104 @@ const FNT = (() => {
 })();
 
 // ============================================================
+// Content-based file type detection
+// ============================================================
+
+/**
+ * Individual detector functions — each takes a Uint8Array of decompressed bytes
+ * and returns true if the data matches the format.
+ */
+const FileDetectors = {
+    /** HotA P32 image (magic "P32F" LE = 0x46323350) */
+    isP32(data) {
+        return data.length >= 4 && data[0]===0x50 && data[1]===0x33 && data[2]===0x32 && data[3]===0x46;
+    },
+    /** HotA D32 animation (magic "D32F" LE = 0x46323344) */
+    isD32(data) {
+        return data.length >= 4 && data[0]===0x44 && data[1]===0x33 && data[2]===0x32 && data[3]===0x46;
+    },
+    /** Standard H3 PCX: first three uint32LE = size, width, height; size == w*h or w*h*3 */
+    isPcx(data) {
+        if (data.length < 12) return false;
+        const u32 = (o) => data[o]|(data[o+1]<<8)|(data[o+2]<<16)|((data[o+3]<<24)>>>0);
+        const size=u32(0), w=u32(4), h=u32(8);
+        return w>0 && w<=4096 && h>0 && h<=4096 && (size===w*h || size===w*h*3);
+    },
+    /** H3 DEF animation: first uint32LE is type code 0x40–0x49, then reasonable width/height */
+    isDef(data) {
+        if (data.length < 16) return false;
+        const u32 = (o) => data[o]|(data[o+1]<<8)|(data[o+2]<<16)|((data[o+3]<<24)>>>0);
+        const t=u32(0), w=u32(4), h=u32(8);
+        return t>=0x40 && t<=0x49 && w>0 && w<=4096 && h>0 && h<=4096;
+    },
+    /** WAV audio: RIFF header */
+    isWav(data) {
+        return data.length >= 4 && data[0]===0x52 && data[1]===0x49 && data[2]===0x46 && data[3]===0x46;
+    },
+    /** Bink video: starts with "BIK" or "KB2" etc. */
+    isBik(data) {
+        return data.length >= 3 && data[0]===0x42 && data[1]===0x49 && data[2]===0x4B;
+    },
+    /** Smacker video: starts with "SMK" */
+    isSmk(data) {
+        return data.length >= 3 && data[0]===0x53 && data[1]===0x4D && data[2]===0x4B;
+    },
+    /** gzip-compressed (H3M/H3C maps) */
+    isGzip(data) {
+        return data.length >= 2 && data[0]===0x1f && data[1]===0x8b;
+    },
+    /** DDS texture */
+    isDds(data) {
+        return data.length >= 4 && data[0]===0x44 && data[1]===0x44 && data[2]===0x53 && data[3]===0x20;
+    },
+    /** H3 font (FNT): passes the FNT isFnt check */
+    isFnt(data) {
+        return FNT.isFnt(data);
+    },
+    /** Plain text: first 256 bytes contain no low control bytes (allow anything >= 0x09 to handle various 8-bit encodings like Latin-1, CP1250, CP1252) */
+    isTxt(data) {
+        const n = Math.min(data.length, 256);
+        if (n === 0) return false;
+        for (let i = 0; i < n; i++) {
+            const c = data[i];
+            // Allow TAB (0x09), LF (0x0A), CR (0x0D), and all bytes >= 0x20
+            if (c === 0x09 || c === 0x0A || c === 0x0D) continue;
+            if (c < 0x20) return false; // other control chars → not text
+        }
+        return true;
+    },
+    /** H3 MSK mask: exactly w*h bytes where the file is the terrain passability bitmask.
+     *  Heuristic: size matches a square map (36, 72, 108, 144) → but MSK is hard to detect uniquely.
+     *  We skip this and let it fall through to binary. */
+    isMsk(_data) { return false; },
+    /** H3 IFR haptic: magic "ifpr" */
+    isIfr(data) {
+        return data.length >= 4 && data[0]===0x69 && data[1]===0x66 && data[2]===0x70 && data[3]===0x72;
+    },
+};
+
+/**
+ * Detect file type from decompressed content bytes.
+ * Returns { ext, category, description }.
+ */
+function detectFileType(data) {
+    if (!data || data.length === 0) return { ext: '', category: 'binary', description: 'Empty' };
+    if (FileDetectors.isP32(data))  return { ext: 'pcx', category: 'image',     description: 'PCX Image (P32/HotA)' };
+    if (FileDetectors.isD32(data))  return { ext: 'def', category: 'animation', description: 'DEF Animation (D32/HotA)' };
+    if (FileDetectors.isDds(data))  return { ext: 'dds', category: 'image',     description: 'DDS Texture' };
+    if (FileDetectors.isWav(data))  return { ext: 'wav', category: 'audio',     description: 'WAV Audio' };
+    if (FileDetectors.isBik(data))  return { ext: 'bik', category: 'video',     description: 'Bink Video' };
+    if (FileDetectors.isSmk(data))  return { ext: 'smk', category: 'video',     description: 'Smacker Video' };
+    if (FileDetectors.isIfr(data))  return { ext: 'ifr', category: 'haptic',    description: 'IFR Haptic' };
+    if (FileDetectors.isGzip(data)) return { ext: 'h3m', category: 'map',       description: 'H3M/H3C Map (gzip)' };
+    if (FileDetectors.isDef(data))  return { ext: 'def', category: 'animation', description: 'DEF Animation' };
+    if (FileDetectors.isPcx(data))  return { ext: 'pcx', category: 'image',     description: 'PCX Image' };
+    if (FileDetectors.isFnt(data))  return { ext: 'fnt', category: 'font',      description: 'FNT Font' };
+    if (FileDetectors.isTxt(data))  return { ext: 'txt', category: 'text',      description: 'Text File' };
+    return { ext: '', category: 'binary', description: 'Binary Data' };
+}
+
+// ============================================================
 // File type detection helpers
 // ============================================================
 function getFileExtension(filename) {
@@ -1778,6 +1899,8 @@ window.H3 = {
     FNT,
     getFileExtension,
     getFileCategory,
+    FileDetectors,
+    detectFileType,
     DataView2,
     zlibDecompress,
     gzipDecompress
