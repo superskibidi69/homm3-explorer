@@ -168,6 +168,7 @@
             case 'zip': return '📦';
             case 'h3m': return '🗺️';
             case 'h3c': return '⚔️';
+            case 'h3t': return '🗃️';
             case 'pak-sheet': return '🗂️';
             case 'pak': return '🖼️';
             default: return '📁';
@@ -939,6 +940,23 @@ self.onmessage = async function(e) {
                             console.error(err);
                             toast(`Error parsing H3C ${file.name}: ${err.message}`, 'error');
                         }
+                    } else if (ext === 'h3t') {
+                        showLoading('Parsing H3T template...');
+                        try {
+                            const text = new TextDecoder('latin1').decode(data);
+                            const parsed = H3.H3TParser.parse(text);
+                            state.standaloneFiles.set(file.name, { data, type: 'h3t', parsed });
+                            state.sourceFiles.set(file.name, { data, filetype: 'H3T Template' });
+                            if (!state.archive) {
+                                buildStandaloneFileList();
+                                setMode('explorer');
+                            }
+                            const totalMaps = parsed.packs.reduce((s, p) => s + p.maps.length, 0);
+                            toast(`Loaded H3T: ${file.name} — ${parsed.packs.length} pack(s), ${totalMaps} map(s)`, 'success');
+                        } catch (err) {
+                            console.error(err);
+                            toast(`Error parsing H3T ${file.name}: ${err.message}`, 'error');
+                        }
                     }
                 } catch (err) {
                     console.error(err);
@@ -1332,6 +1350,8 @@ self.onmessage = async function(e) {
                         try { campaignParsed = await H3Map.parseH3C(info.data, { encoding: state.mapEncoding }); } catch { /* fallback to cached */ }
                     }
                     showH3CPreview(preview, campaignParsed, file.name, info.data);
+                } else if (info.type === 'h3t') {
+                    showH3TPreview(preview, info.parsed, file.name, info.data);
                 }
                 return;
             }
@@ -3602,6 +3622,341 @@ self.onmessage = async function(e) {
         });
     }
 
+    // ─── H3T Viewer ─────────────────────────────────────────────────────────────
+    function showH3TPreview(container, parsed, filename, rawData) {
+        const { packs } = parsed;
+        const totalMaps = packs.reduce((s, p) => s + p.maps.length, 0);
+
+        // Flatten all maps for navigation
+        const allMaps = [];
+        for (const pack of packs) {
+            for (const map of pack.maps) allMaps.push({ pack, map });
+        }
+
+        // Player colours (HoMM3 order: red, blue, tan, green, orange, purple, teal, pink)
+        const PLAYER_COLORS = ['#c84040','#4060c8','#a08050','#40a040','#e87820','#8840a8','#20a8a0','#c860a0'];
+
+        function zoneColor(z, playerIdx) {
+            if (z.humanStart)    return PLAYER_COLORS[playerIdx % PLAYER_COLORS.length];
+            if (z.computerStart) return '#5a3a8a';
+            if (z.treasure)      return '#8a6820';
+            if (z.junction)      return '#1a7070';
+            return '#2e3d50';
+        }
+
+        // ── Table view ──────────────────────────────────────────────────────────
+        function renderMapDetail(pack, map) {
+            const zoneTypeIcon = (z) => z.humanStart ? '🏠' : z.computerStart ? '💻' : z.treasure ? '💎' : z.junction ? '🔀' : '🌿';
+            const zoneTypeName = (z) => z.humanStart ? 'Human' : z.computerStart ? 'Computer' : z.treasure ? 'Treasure' : z.junction ? 'Junction' : 'Neutral';
+            const strength = (s) => s === 'weak' ? '⚡ Weak' : s === 'strong' ? '💪 Strong' : s ? s : '—';
+            const sizeLabel = (s) => { const n = parseInt(s); if (!n) return s || '—'; if (n <= 18) return `XS (${s})`; if (n <= 24) return `S (${s})`; if (n <= 28) return `M (${s})`; if (n <= 32) return `L (${s})`; if (n <= 36) return `XL (${s})`; return `G (${s})`; };
+            const val = (v) => v || '—';
+
+            const zonesHtml = map.zones.map(z => `
+                <tr>
+                    <td>${escapeHtml(z.id)}</td>
+                    <td title="${zoneTypeName(z)}">${zoneTypeIcon(z)} ${zoneTypeName(z)}</td>
+                    <td>${val(z.baseSize)}</td>
+                    <td>${escapeHtml(z.terrainTypes.join(', ') || '—')}</td>
+                    <td>${strength(z.monsterStrength)}</td>
+                    <td>${z.treasure1.low && z.treasure1.high ? `${z.treasure1.low}–${z.treasure1.high} (d:${z.treasure1.density})` : '—'}</td>
+                    <td>${z.treasure2.low && z.treasure2.high ? `${z.treasure2.low}–${z.treasure2.high} (d:${z.treasure2.density})` : '—'}</td>
+                    <td>${escapeHtml(z.townTypes.join(', ') || 'Any')}</td>
+                </tr>
+            `).join('');
+
+            const connsHtml = map.connections.map(c => `
+                <tr>
+                    <td>${escapeHtml(c.zone1)}</td>
+                    <td>${escapeHtml(c.zone2)}</td>
+                    <td>${escapeHtml(c.value)}</td>
+                    <td>${c.wide === 'x' ? '✓' : '—'}</td>
+                    <td>${c.borderGuard === 'x' ? '✓' : c.borderGuard || '—'}</td>
+                    <td>${escapeHtml(c.road || '—')}</td>
+                    <td>${escapeHtml(c.type || '—')}</td>
+                    <td>${c.fictive === 'x' ? '✓' : '—'}</td>
+                </tr>
+            `).join('');
+
+            return `
+                <div class="h3t-map-overview">
+                    <div class="h3t-overview-grid">
+                        <div class="h3t-info-card"><div class="h3t-card-label">Pack</div><div class="h3t-card-value">${escapeHtml(pack.name || '—')}</div></div>
+                        <div class="h3t-info-card"><div class="h3t-card-label">Map</div><div class="h3t-card-value">${escapeHtml(map.name)}</div></div>
+                        <div class="h3t-info-card"><div class="h3t-card-label">Size</div><div class="h3t-card-value">${sizeLabel(map.minSize)}${map.maxSize && map.maxSize !== map.minSize ? ' – ' + sizeLabel(map.maxSize) : ''}</div></div>
+                        <div class="h3t-info-card"><div class="h3t-card-label">Zones</div><div class="h3t-card-value">${map.zones.length}</div></div>
+                        <div class="h3t-info-card"><div class="h3t-card-label">Human starts</div><div class="h3t-card-value">${map.zones.filter(z => z.humanStart).length}</div></div>
+                        <div class="h3t-info-card"><div class="h3t-card-label">Connections</div><div class="h3t-card-value">${map.connections.length}</div></div>
+                        <div class="h3t-info-card"><div class="h3t-card-label">Artifacts</div><div class="h3t-card-value">${val(map.artifacts)}</div></div>
+                        <div class="h3t-info-card"><div class="h3t-card-label">Spells</div><div class="h3t-card-value">${val(map.spells)}</div></div>
+                        <div class="h3t-info-card"><div class="h3t-card-label">Sec. Skills</div><div class="h3t-card-value">${val(map.secSkills)}</div></div>
+                    </div>
+                    ${pack.description ? `<div class="h3t-pack-desc">${escapeHtml(pack.description)}</div>` : ''}
+                </div>
+                <div class="h3t-section">
+                    <div class="h3t-section-title">Zones (${map.zones.length})</div>
+                    <div class="h3t-table-wrap">
+                        <table class="h3t-table">
+                            <thead><tr><th>ID</th><th>Type</th><th>Base Size</th><th>Terrain</th><th>Monsters</th><th>Treasure 1</th><th>Treasure 2</th><th>Towns</th></tr></thead>
+                            <tbody>${zonesHtml}</tbody>
+                        </table>
+                    </div>
+                </div>
+                ${map.connections.length ? `
+                <div class="h3t-section">
+                    <div class="h3t-section-title">Connections (${map.connections.length})</div>
+                    <div class="h3t-table-wrap">
+                        <table class="h3t-table">
+                            <thead><tr><th>Zone 1</th><th>Zone 2</th><th>Value</th><th>Wide</th><th>Border Guard</th><th>Road</th><th>Type</th><th>Fictive</th></tr></thead>
+                            <tbody>${connsHtml}</tbody>
+                        </table>
+                    </div>
+                </div>` : ''}
+            `;
+        }
+
+        // ── Graph view (SVG force-directed) ─────────────────────────────────────
+        function renderMapGraph(pack, map) {
+            const SVG_W = 660, SVG_H = 460;
+            const PAD = 56, NW = 58, NH = 32, NR = 7;
+
+            // Assign player colours to human-start zones in zone-ID order
+            const humanZones = map.zones.filter(z => z.humanStart).map(z => z.id);
+            const humanColorMap = {};
+            humanZones.forEach((id, i) => { humanColorMap[id] = PLAYER_COLORS[i % PLAYER_COLORS.length]; });
+
+            // Parse imageSettings: "X Y" or "X1 Y1 X2 Y2 ..." — use first two values
+            const parsePos = (s) => {
+                if (!s) return null;
+                const parts = s.trim().split(/\s+/).map(Number).filter(v => !isNaN(v));
+                if (parts.length < 2) return null;
+                return { x: parts[0], y: parts[1] };
+            };
+
+            // Build nodes with stored positions where available
+            const rawNodes = map.zones.map(z => ({
+                id: z.id, zone: z,
+                raw: parsePos(z.imageSettings)
+            }));
+            const hasStoredPos = rawNodes.filter(n => n.raw).length >= rawNodes.length * 0.6;
+
+            // Determine coordinate bounds from stored positions, then scale to SVG
+            let nodes;
+            if (hasStoredPos) {
+                // Use stored coordinates — transform to SVG space
+                const xs = rawNodes.filter(n => n.raw).map(n => n.raw.x);
+                const ys = rawNodes.filter(n => n.raw).map(n => n.raw.y);
+                const minX = Math.min(...xs), maxX = Math.max(...xs);
+                const minY = Math.min(...ys), maxY = Math.max(...ys);
+                const rangeX = (maxX - minX) || 1, rangeY = (maxY - minY) || 1;
+                const scaleX = (SVG_W - 2 * PAD) / rangeX;
+                const scaleY = (SVG_H - 2 * PAD) / rangeY;
+                const scale = Math.min(scaleX, scaleY);
+                const offX = PAD + ((SVG_W - 2 * PAD) - rangeX * scale) / 2;
+                const offY = PAD + ((SVG_H - 2 * PAD) - rangeY * scale) / 2;
+                const toSvg = (rx, ry) => ({
+                    x: offX + (rx - minX) * scale,
+                    y: offY + (ry - minY) * scale
+                });
+                // For zones without a position, interpolate from connected neighbours
+                const tempMap = Object.fromEntries(rawNodes.map(n => [n.id, n]));
+                nodes = rawNodes.map(n => {
+                    const p = n.raw ? toSvg(n.raw.x, n.raw.y) : null;
+                    return { id: n.id, zone: n.zone, x: p ? p.x : SVG_W / 2, y: p ? p.y : SVG_H / 2, dx: 0, dy: 0 };
+                });
+            } else {
+                // Fallback: Fruchterman–Reingold
+                const rng = (() => { let s = 42; return () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; }; })();
+                nodes = rawNodes.map(n => ({ id: n.id, zone: n.zone, x: PAD + rng() * (SVG_W - 2 * PAD), y: PAD + rng() * (SVG_H - 2 * PAD), dx: 0, dy: 0 }));
+                const nodeMapFR = Object.fromEntries(nodes.map(n => [n.id, n]));
+                const edgesFR = [];
+                const seen = {};
+                for (const c of map.connections) {
+                    const key = [c.zone1, c.zone2].sort().join('\x00');
+                    if (!seen[key]) { seen[key] = 1; edgesFR.push({ a: c.zone1, b: c.zone2 }); }
+                }
+                const k = Math.sqrt((SVG_W * SVG_H) / Math.max(nodes.length, 1));
+                let temp = SVG_W * 0.35;
+                for (let iter = 0; iter < 250; iter++) {
+                    for (const n of nodes) { n.dx = 0; n.dy = 0; }
+                    for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
+                        const dx = nodes[i].x - nodes[j].x, dy = nodes[i].y - nodes[j].y;
+                        const d = Math.sqrt(dx * dx + dy * dy) || 0.01, f = k * k / d;
+                        nodes[i].dx += dx / d * f; nodes[i].dy += dy / d * f;
+                        nodes[j].dx -= dx / d * f; nodes[j].dy -= dy / d * f;
+                    }
+                    for (const e of edgesFR) {
+                        const a = nodeMapFR[e.a], b = nodeMapFR[e.b]; if (!a || !b) continue;
+                        const dx = a.x - b.x, dy = a.y - b.y;
+                        const d = Math.sqrt(dx * dx + dy * dy) || 0.01, f = d * d / k;
+                        a.dx -= dx / d * f; a.dy -= dy / d * f; b.dx += dx / d * f; b.dy += dy / d * f;
+                    }
+                    for (const n of nodes) {
+                        const d = Math.sqrt(n.dx * n.dx + n.dy * n.dy) || 0.01, step = Math.min(d, temp);
+                        n.x = Math.max(PAD, Math.min(SVG_W - PAD, n.x + n.dx / d * step));
+                        n.y = Math.max(PAD, Math.min(SVG_H - PAD, n.y + n.dy / d * step));
+                    }
+                    temp *= 0.97;
+                }
+            }
+
+            const nodeMap = Object.fromEntries(nodes.map(n => [n.id, n]));
+
+            // Deduplicate edges: multiple connections between same zone pair → one visual edge
+            const edgeMap = {};
+            for (const c of map.connections) {
+                const key = [c.zone1, c.zone2].sort().join('\x00');
+                if (!edgeMap[key]) edgeMap[key] = { a: c.zone1, b: c.zone2, values: [] };
+                edgeMap[key].values.push(parseInt(c.value) || 3000);
+            }
+            const edges = Object.values(edgeMap);
+
+            // Draw edges
+            let edgeSvg = '';
+            for (const e of edges) {
+                const na = nodeMap[e.a], nb = nodeMap[e.b];
+                if (!na || !nb) continue;
+                const maxVal = Math.max(...e.values);
+                const cnt = e.values.length;
+                // Colour by value range
+                const stroke = maxVal >= 45000 ? '#58a6ff' : maxVal >= 12500 ? '#e89020' : '#6e7f8f';
+                const sw = Math.min(1 + cnt, 5);
+                const dash = maxVal >= 45000 ? 'stroke-dasharray="10 5"' : cnt > 1 ? 'stroke-dasharray="4 3"' : '';
+                const mx = (na.x + nb.x) / 2, my = (na.y + nb.y) / 2;
+                const label = e.values.length === 1
+                    ? String(e.values[0])
+                    : e.values.sort((x, y) => y - x).join('/');
+                edgeSvg += `<line x1="${na.x.toFixed(1)}" y1="${na.y.toFixed(1)}" x2="${nb.x.toFixed(1)}" y2="${nb.y.toFixed(1)}" stroke="${stroke}" stroke-width="${sw}" ${dash} opacity="0.75"/>`;
+                edgeSvg += `<text x="${mx.toFixed(1)}" y="${my.toFixed(1)}" text-anchor="middle" dominant-baseline="middle" fill="${stroke}" font-size="8.5" font-family="monospace" paint-order="stroke" stroke="var(--bg-primary,#0d1117)" stroke-width="2.5">${escapeHtml(label)}</text>`;
+            }
+
+            // Draw nodes
+            let nodeSvg = '';
+            let pIdx = 0;
+            for (const n of nodes) {
+                const z = n.zone;
+                const fill = z.humanStart ? (humanColorMap[z.id] || PLAYER_COLORS[0])
+                    : z.computerStart ? '#5a3a8a'
+                    : z.treasure ? '#8a6820'
+                    : z.junction ? '#1a7070'
+                    : '#2e3d50';
+                const border = z.humanStart ? 'rgba(255,255,255,0.85)'
+                    : z.computerStart ? '#a060e0'
+                    : z.treasure ? '#d4a830'
+                    : z.junction ? '#30c0c0'
+                    : '#5a7090';
+                const typeLabel = z.humanStart ? '🏠' : z.computerStart ? '💻' : z.treasure ? '💎' : z.junction ? '🔀' : '🌿';
+                const subLabel = z.baseSize ? `sz:${z.baseSize}` : '';
+                const x = n.x.toFixed(1), y = n.y.toFixed(1);
+                nodeSvg += `
+                    <rect x="${(n.x - NW / 2).toFixed(1)}" y="${(n.y - NH / 2).toFixed(1)}" width="${NW}" height="${NH}" rx="${NR}" fill="${fill}" stroke="${border}" stroke-width="1.5"/>
+                    <text x="${x}" y="${(n.y - 5).toFixed(1)}" text-anchor="middle" dominant-baseline="middle" fill="white" font-size="11" font-weight="700" font-family="sans-serif">${typeLabel} ${escapeHtml(z.id)}</text>
+                    ${subLabel ? `<text x="${x}" y="${(n.y + 8).toFixed(1)}" text-anchor="middle" dominant-baseline="middle" fill="rgba(255,255,255,0.6)" font-size="8.5" font-family="sans-serif">${subLabel}</text>` : ''}
+                `;
+            }
+
+            // Legend
+            const legendItems = [
+                ...humanZones.slice(0, 4).map((id, i) => `<span class="h3t-leg-dot" style="background:${PLAYER_COLORS[i]}"></span>${escapeHtml(id)}`),
+                `<span class="h3t-leg-dot" style="background:#5a3a8a"></span>CPU`,
+                `<span class="h3t-leg-dot" style="background:#8a6820"></span>Treasure`,
+                `<span class="h3t-leg-dot" style="background:#1a7070"></span>Junction`,
+                `<span class="h3t-leg-dot" style="background:#2e3d50"></span>Neutral`,
+                `<span class="h3t-leg-line" style="border-color:#58a6ff;border-style:dashed"></span>portal`,
+                `<span class="h3t-leg-line" style="border-color:#e89020"></span>12.5k+`,
+                `<span class="h3t-leg-line" style="border-color:#6e7f8f"></span>normal`,
+            ].map(s => `<span class="h3t-leg-item">${s}</span>`).join('');
+
+            return `
+                <div class="h3t-graph-wrap">
+                    <div class="h3t-graph-legend">${legendItems}</div>
+                    <div class="h3t-graph-scroll">
+                        <svg class="h3t-graph-svg" viewBox="0 0 ${SVG_W} ${SVG_H}" xmlns="http://www.w3.org/2000/svg">
+                            <rect width="${SVG_W}" height="${SVG_H}" fill="var(--bg-primary,#0d1117)" rx="6"/>
+                            ${edgeSvg}${nodeSvg}
+                        </svg>
+                    </div>
+                </div>
+            `;
+        }
+
+        // ── Overview card (used in both views) ──────────────────────────────────
+        function overviewHtml(pack, map) {
+            const sizeLabel = (s) => { const n = parseInt(s); if (!n) return s || '—'; if (n <= 18) return `XS`; if (n <= 24) return `S`; if (n <= 28) return `M`; if (n <= 32) return `L`; if (n <= 36) return `XL`; return `G`; };
+            const val = (v) => v || '—';
+            return `<div class="h3t-map-titlebar">
+                <span class="h3t-map-title-name">${escapeHtml(map.name)}</span>
+                <span class="h3t-map-title-meta">${sizeLabel(map.minSize)}${map.maxSize && map.maxSize !== map.minSize ? '–' + sizeLabel(map.maxSize) : ''} · ${map.zones.length} zones · ${map.connections.length} conns</span>
+            </div>`;
+        }
+
+        // ── Render detail area with view toggle ─────────────────────────────────
+        function renderDetail(pack, map, view) {
+            const body = view === 'graph' ? renderMapGraph(pack, map) : renderMapDetail(pack, map);
+            return `
+                <div class="h3t-view-toggle">
+                    <button class="h3t-toggle-btn${view === 'table' ? ' active' : ''}" data-view="table">📋 Table</button>
+                    <button class="h3t-toggle-btn${view === 'graph' ? ' active' : ''}" data-view="graph">🔗 Graph</button>
+                </div>
+                ${body}
+            `;
+        }
+
+        // ── Sidebar ─────────────────────────────────────────────────────────────
+        const sidebarItems = allMaps.map((entry, i) =>
+            `<div class="h3t-map-item" data-idx="${i}">
+                <span class="h3t-map-item-num">${i + 1}</span>
+                <div class="h3t-map-item-info">
+                    <div class="h3t-map-item-name">${escapeHtml(entry.map.name)}</div>
+                    <div class="h3t-map-item-meta">${entry.map.zones.length} zones · ${entry.map.minSize}–${entry.map.maxSize}</div>
+                </div>
+            </div>`
+        ).join('');
+
+        container.innerHTML = `
+            <div class="preview-header">
+                <div class="preview-title">🗃️ ${escapeHtml(filename)}</div>
+                <div class="preview-meta">${packs.length} pack(s) · ${totalMaps} map(s)</div>
+            </div>
+            <div class="h3t-layout">
+                <div class="h3t-sidebar">
+                    <div class="h3t-sidebar-title">Maps</div>
+                    <div class="h3t-map-list" id="h3tMapList">${sidebarItems}</div>
+                </div>
+                <div class="h3t-detail" id="h3tDetail">
+                    <div class="h3t-empty-hint">← Select a map</div>
+                </div>
+            </div>
+        `;
+
+        let currentView = 'graph'; // default to graph
+        let currentEntry = null;
+
+        const detailEl = container.querySelector('#h3tDetail');
+
+        // View toggle clicks (delegated on detail container)
+        detailEl.addEventListener('click', e => {
+            const btn = e.target.closest('.h3t-toggle-btn');
+            if (!btn || !currentEntry) return;
+            currentView = btn.dataset.view;
+            detailEl.innerHTML = renderDetail(currentEntry.pack, currentEntry.map, currentView);
+        });
+
+        // Map list clicks
+        container.querySelector('#h3tMapList').addEventListener('click', e => {
+            const item = e.target.closest('.h3t-map-item');
+            if (!item) return;
+            const idx = parseInt(item.dataset.idx);
+            container.querySelectorAll('.h3t-map-item').forEach(el => el.classList.toggle('selected', parseInt(el.dataset.idx) === idx));
+            currentEntry = allMaps[idx];
+            detailEl.innerHTML = renderDetail(currentEntry.pack, currentEntry.map, currentView);
+        });
+
+        // Auto-select first map
+        const firstItem = container.querySelector('.h3t-map-item');
+        if (firstItem) firstItem.click();
+    }
+
     function showAudioPreview(container, data, filename, mimeType = 'audio/wav') {
         let audioData, decoded = false;
         if (mimeType === 'audio/wav') {
@@ -4895,6 +5250,13 @@ self.onmessage = async function(e) {
                 const parsed = await H3Map.parseH3C(data);
                 state.standaloneFiles.set(displayName, { data, type: 'campaign', parsed });
                 state.sourceFiles.set(displayName, { data, filetype: 'H3C Campaign (' + source + ')' });
+            } catch { state.standaloneFiles.set(displayName, { data, type: ext }); }
+        } else if (ext === 'h3t') {
+            try {
+                const text = new TextDecoder('latin1').decode(data);
+                const parsed = H3.H3TParser.parse(text);
+                state.standaloneFiles.set(displayName, { data, type: 'h3t', parsed });
+                state.sourceFiles.set(displayName, { data, filetype: 'H3T Template (' + source + ')' });
             } catch { state.standaloneFiles.set(displayName, { data, type: ext }); }
         } else {
             state.standaloneFiles.set(displayName, { data, type: ext });

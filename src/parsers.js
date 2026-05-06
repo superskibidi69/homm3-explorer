@@ -2083,6 +2083,214 @@ function getFileCategory(filename) {
     }
 }
 
+// ─── H3T Parser ──────────────────────────────────────────────────────────────
+// H3T = HotA Random-Map-Template, plain Tab-Separated-Values with CRLF endings.
+// 3 header rows (group / sub-group / column names), then data rows.
+// Column layout (0-based indices):
+//   Pack   : cols  0–14   (name @ 7, desc @ 8)
+//   Map    : cols 15–27   (name @ 15, minSize @ 16, maxSize @ 17)
+//   Zone   : cols 28–126  (id @ 28, humanStart @ 29, computerStart @ 30, baseSize @ 33,
+//                          monsterStrength @ 83)
+//   Conns  : cols 127–139 (zone1 @ 127, zone2 @ 128, value @ 129, wide @ 130,
+//                          borderGuard @ 131, road @ 132, type @ 133, fictive @ 134)
+
+class H3TParser {
+    // Column index constants
+    static C = {
+        // Pack
+        PACK_TOWN_CNT: 0, PACK_TERRAIN_CNT: 1, PACK_ZONETYPE_CNT: 2,
+        PACK_PACKNEW: 3, PACK_MAPNEW: 4, PACK_ZONENEW: 5, PACK_CONNNEW: 6,
+        PACK_NAME: 7, PACK_DESC: 8, PACK_TOWNS: 9, PACK_HEROES: 10,
+        PACK_MIRROR: 11, PACK_TAGS: 12, PACK_MAX_BATTLE: 13, PACK_FORBID_HIRE: 14,
+        // Map
+        MAP_NAME: 15, MAP_MIN_SIZE: 16, MAP_MAX_SIZE: 17,
+        MAP_ARTIFACTS: 18, MAP_COMBO_ARTS: 19, MAP_SPELLS: 20, MAP_SEC_SKILLS: 21,
+        MAP_OBJECTS: 22, MAP_ROCK_BLOCKS: 23, MAP_SPARSE: 24,
+        MAP_NO_SPEC_WEEKS: 25, MAP_SPELL_RESEARCH: 26, MAP_ANARCHY: 27,
+        // Zone
+        ZONE_ID: 28, ZONE_HUMAN: 29, ZONE_COMPUTER: 30,
+        ZONE_TREASURE: 31, ZONE_JUNCTION: 32, ZONE_BASE_SIZE: 33,
+        ZONE_MIN_HUMAN_POS: 34, ZONE_MAX_HUMAN_POS: 35,
+        ZONE_MIN_TOTAL_POS: 36, ZONE_MAX_TOTAL_POS: 37,
+        ZONE_OWNERSHIP: 38,
+        ZONE_PLAYER_MIN_TOWNS: 39, ZONE_PLAYER_MIN_CASTLES: 40,
+        ZONE_PLAYER_TOWN_DENSITY: 41, ZONE_PLAYER_CASTLE_DENSITY: 42,
+        ZONE_NEUTRAL_MIN_TOWNS: 43, ZONE_NEUTRAL_MIN_CASTLES: 44,
+        ZONE_NEUTRAL_TOWN_DENSITY: 45, ZONE_NEUTRAL_CASTLE_DENSITY: 46,
+        ZONE_SAME_TYPE: 47,
+        // Town types (cols 48-59): Castle Rampart Tower Inferno Necropolis Dungeon Stronghold Fortress Conflux Cove Factory Bulwark
+        ZONE_TOWN_CASTLE: 48, ZONE_TOWN_RAMPART: 49, ZONE_TOWN_TOWER: 50,
+        ZONE_TOWN_INFERNO: 51, ZONE_TOWN_NECROPOLIS: 52, ZONE_TOWN_DUNGEON: 53,
+        ZONE_TOWN_STRONGHOLD: 54, ZONE_TOWN_FORTRESS: 55, ZONE_TOWN_CONFLUX: 56,
+        ZONE_TOWN_COVE: 57, ZONE_TOWN_FACTORY: 58, ZONE_TOWN_BULWARK: 59,
+        // Mines min (60-66): Wood Mercury Ore Sulfur Crystal Gems Gold
+        ZONE_MINE_WOOD: 60, ZONE_MINE_MERCURY: 61, ZONE_MINE_ORE: 62,
+        ZONE_MINE_SULFUR: 63, ZONE_MINE_CRYSTAL: 64, ZONE_MINE_GEMS: 65, ZONE_MINE_GOLD: 66,
+        // Mine density (67-73)
+        // Terrain (74-84): Match Dirt Sand Grass Snow Swamp Rough Cave Lava Highlands Wasteland
+        ZONE_TERRAIN_MATCH: 74, ZONE_TERRAIN_DIRT: 75, ZONE_TERRAIN_SAND: 76,
+        ZONE_TERRAIN_GRASS: 77, ZONE_TERRAIN_SNOW: 78, ZONE_TERRAIN_SWAMP: 79,
+        ZONE_TERRAIN_ROUGH: 80, ZONE_TERRAIN_CAVE: 81, ZONE_TERRAIN_LAVA: 82,
+        ZONE_TERRAIN_HIGHLANDS: 83, ZONE_TERRAIN_WASTELAND: 84,
+        // Monsters (85-97)
+        ZONE_MONSTER_STRENGTH: 85,
+        // Treasure tiers (98-106): Low High Density × 3
+        ZONE_TREASURE1_LOW: 98, ZONE_TREASURE1_HIGH: 99, ZONE_TREASURE1_DENSITY: 100,
+        ZONE_TREASURE2_LOW: 101, ZONE_TREASURE2_HIGH: 102, ZONE_TREASURE2_DENSITY: 103,
+        ZONE_TREASURE3_LOW: 104, ZONE_TREASURE3_HIGH: 105, ZONE_TREASURE3_DENSITY: 106,
+        ZONE_IMAGE_SETTINGS: 112,
+        // Connections
+        CONN_ZONE1: 127, CONN_ZONE2: 128, CONN_VALUE: 129,
+        CONN_WIDE: 130, CONN_BORDER_GUARD: 131, CONN_ROAD: 132,
+        CONN_TYPE: 133, CONN_FICTIVE: 134
+    };
+
+    static parse(text) {
+        const C = H3TParser.C;
+        const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+
+        // We need exactly 3 header rows (may be empty trailing lines)
+        const nonEmpty = (l) => l.trim().length > 0;
+        const headerLines = [];
+        const dataLines = [];
+        let headerDone = false;
+        let headerCount = 0;
+        for (const l of lines) {
+            if (headerCount < 3) {
+                headerLines.push(l.split('\t'));
+                headerCount++;
+            } else {
+                dataLines.push(l.split('\t'));
+            }
+        }
+
+        const colNames = headerLines[2] || [];
+        const packs = [];
+        let currentPack = null;
+        let currentMap = null;
+
+        const g = (row, idx) => (row[idx] || '').trim();
+
+        for (const row of dataLines) {
+            const allEmpty = row.every(c => !c.trim());
+            if (allEmpty) continue;
+
+            const packName = g(row, C.PACK_NAME);
+            const mapName  = g(row, C.MAP_NAME);
+            const zoneId   = g(row, C.ZONE_ID);
+            const conn1    = g(row, C.CONN_ZONE1);
+
+            // New pack
+            if (packName) {
+                currentPack = {
+                    name: packName,
+                    description: g(row, C.PACK_DESC),
+                    townCount: g(row, C.PACK_TOWN_CNT),
+                    terrainCount: g(row, C.PACK_TERRAIN_CNT),
+                    zoneTypeCount: g(row, C.PACK_ZONETYPE_CNT),
+                    towns: g(row, C.PACK_TOWNS),
+                    heroes: g(row, C.PACK_HEROES),
+                    mirror: g(row, C.PACK_MIRROR),
+                    tags: g(row, C.PACK_TAGS),
+                    maxBattleRounds: g(row, C.PACK_MAX_BATTLE),
+                    forbidHireHeroes: g(row, C.PACK_FORBID_HIRE),
+                    maps: []
+                };
+                packs.push(currentPack);
+            }
+
+            // New map
+            if (mapName) {
+                currentMap = {
+                    name: mapName,
+                    minSize: g(row, C.MAP_MIN_SIZE),
+                    maxSize: g(row, C.MAP_MAX_SIZE),
+                    artifacts: g(row, C.MAP_ARTIFACTS),
+                    comboArts: g(row, C.MAP_COMBO_ARTS),
+                    spells: g(row, C.MAP_SPELLS),
+                    secSkills: g(row, C.MAP_SEC_SKILLS),
+                    objects: g(row, C.MAP_OBJECTS),
+                    rockBlocks: g(row, C.MAP_ROCK_BLOCKS),
+                    sparseness: g(row, C.MAP_SPARSE),
+                    noSpecialWeeks: g(row, C.MAP_NO_SPEC_WEEKS),
+                    spellResearch: g(row, C.MAP_SPELL_RESEARCH),
+                    anarchy: g(row, C.MAP_ANARCHY),
+                    zones: [],
+                    connections: []
+                };
+                if (!currentPack) {
+                    currentPack = { name: '', description: '', maps: [] };
+                    packs.push(currentPack);
+                }
+                currentPack.maps.push(currentMap);
+            }
+
+            // Zone row
+            if (zoneId) {
+                if (!currentMap) {
+                    currentMap = { name: '(unnamed)', minSize: '', maxSize: '', zones: [], connections: [] };
+                    if (!currentPack) { currentPack = { name: '', description: '', maps: [] }; packs.push(currentPack); }
+                    currentPack.maps.push(currentMap);
+                }
+                const townTypes = [];
+                const townNames = ['Castle','Rampart','Tower','Inferno','Necropolis','Dungeon','Stronghold','Fortress','Conflux','Cove','Factory','Bulwark'];
+                for (let ti = 0; ti < 12; ti++) {
+                    if (g(row, C.ZONE_TOWN_CASTLE + ti) === 'x') townTypes.push(townNames[ti]);
+                }
+                const terrainTypes = [];
+                const terrainNames = ['Match','Dirt','Sand','Grass','Snow','Swamp','Rough','Cave','Lava','Highlands','Wasteland'];
+                for (let ti = 0; ti < 11; ti++) {
+                    if (g(row, C.ZONE_TERRAIN_MATCH + ti) === 'x') terrainTypes.push(terrainNames[ti]);
+                }
+                currentMap.zones.push({
+                    id: zoneId,
+                    humanStart: g(row, C.ZONE_HUMAN) === 'x',
+                    computerStart: g(row, C.ZONE_COMPUTER) === 'x',
+                    treasure: g(row, C.ZONE_TREASURE) === 'x',
+                    junction: g(row, C.ZONE_JUNCTION) === 'x',
+                    baseSize: g(row, C.ZONE_BASE_SIZE),
+                    monsterStrength: g(row, C.ZONE_MONSTER_STRENGTH),
+                    ownership: g(row, C.ZONE_OWNERSHIP),
+                    townTypes,
+                    terrainTypes,
+                    treasure1: { low: g(row, C.ZONE_TREASURE1_LOW), high: g(row, C.ZONE_TREASURE1_HIGH), density: g(row, C.ZONE_TREASURE1_DENSITY) },
+                    treasure2: { low: g(row, C.ZONE_TREASURE2_LOW), high: g(row, C.ZONE_TREASURE2_HIGH), density: g(row, C.ZONE_TREASURE2_DENSITY) },
+                    treasure3: { low: g(row, C.ZONE_TREASURE3_LOW), high: g(row, C.ZONE_TREASURE3_HIGH), density: g(row, C.ZONE_TREASURE3_DENSITY) },
+                    minHumanPos: g(row, C.ZONE_MIN_HUMAN_POS),
+                    maxHumanPos: g(row, C.ZONE_MAX_HUMAN_POS),
+                    imageSettings: g(row, C.ZONE_IMAGE_SETTINGS),
+                });
+            }
+
+            // Connection row
+            if (conn1 && currentMap) {
+                currentMap.connections.push({
+                    zone1: conn1,
+                    zone2: g(row, C.CONN_ZONE2),
+                    value: g(row, C.CONN_VALUE),
+                    wide: g(row, C.CONN_WIDE),
+                    borderGuard: g(row, C.CONN_BORDER_GUARD),
+                    road: g(row, C.CONN_ROAD),
+                    type: g(row, C.CONN_TYPE),
+                    fictive: g(row, C.CONN_FICTIVE)
+                });
+            }
+        }
+
+        return { packs, colNames };
+    }
+
+    static toJson(parsed) {
+        return JSON.stringify(parsed, null, 2);
+    }
+
+    static isH3T(bytes) {
+        // H3T files are plain text TSV starting with group header row containing "Pack" or "Field count"
+        const s = new TextDecoder('latin1').decode(bytes.slice(0, 200));
+        return /^(Pack\t|Town\t|Field count\t)/i.test(s);
+    }
+}
+
 // Export
 window.H3 = {
     LodFile,
@@ -2097,6 +2305,7 @@ window.H3 = {
     FNT,
     ZipFile,
     HotaDat,
+    H3TParser,
     getFileExtension,
     getFileCategory,
     FileDetectors,

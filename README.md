@@ -16,6 +16,7 @@ A pure browser-based file explorer for **Heroes of Might and Magic III** game ar
   - Audio: `.SND` archives containing WAV samples (in-browser playback)
   - Video: `.VID` archives with `.SMK` (Smacker) and `.BIK` (Bink) videos — decoded entirely in JavaScript
   - Maps / Campaigns: `.H3M` and `.H3C` - shows informations, statistics and previews
+  - RMG Templates: `.H3T` (HotA Random Map Templates) — structured viewer with zone details and connection graph
   - Data tables: `.DAT` (HotA creature / unit data) — sortable table view, JSON export
   - Archives: `.ZIP` — browse and preview any contained game file
 - **Export** any file from an archive to disk
@@ -37,6 +38,7 @@ A pure browser-based file explorer for **Heroes of Might and Magic III** game ar
 | `.FNT` | Bitmap fonts (256-glyph indexed format) |
 | `.H3M` | Heroes of Might and Magic III map file |
 | `.H3C` | Heroes of Might and Magic III campaign file |
+| `.H3T` | HotA Random Map Template — structured viewer with packs, maps, zones and connections |
 | `.DAT` | HotA unit/creature data file (`HotA.dat`) |
 | `.ZIP` | Generic ZIP archive — browse and preview any contained file |
 | `.EXE` | GOG installer (Inno Setup, LZMA2 / zlib) or InstallShield v5 self-extracting archive |
