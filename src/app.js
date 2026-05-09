@@ -64,6 +64,8 @@
         mapEncoding: 'auto',
         // HotA DAT encoding: 'auto' or a specific IANA label
         datEncoding: 'auto',
+        // Savegame encoding for hero names / map names
+        savEncoding: 'windows-1252',
 
         // Last text preview data for re-rendering on encoding change
         lastTextData: null,
@@ -957,6 +959,22 @@ self.onmessage = async function(e) {
                             console.error(err);
                             toast(`Error parsing H3T ${file.name}: ${err.message}`, 'error');
                         }
+                    } else if (['gm1', 'gm2', 'tgm', 'cgm'].includes(ext)) {
+                        showLoading('Parsing savegame...');
+                        try {
+                            const parsed = H3Sav.parseSavegame(data, ext);
+                            state.standaloneFiles.set(file.name, { data, type: 'savegame', parsed });
+                            state.sourceFiles.set(file.name, { data, filetype: 'HoMM3 Savegame' });
+                            if (!state.archive) {
+                                buildStandaloneFileList();
+                                setMode('explorer');
+                            }
+                            const nameLabel = parsed.name ? ` — ${parsed.name}` : '';
+                            toast(`Loaded save: ${file.name}${nameLabel} (${parsed.versionName})`, 'success');
+                        } catch (err) {
+                            console.error(err);
+                            toast(`Error parsing savegame ${file.name}: ${err.message}`, 'error');
+                        }
                     }
                 } catch (err) {
                     console.error(err);
@@ -1352,6 +1370,8 @@ self.onmessage = async function(e) {
                     showH3CPreview(preview, campaignParsed, file.name, info.data);
                 } else if (info.type === 'h3t') {
                     showH3TPreview(preview, info.parsed, file.name, info.data);
+                } else if (info.type === 'savegame') {
+                    showSavegamePreview(preview, info.parsed, file.name, info.data);
                 }
                 return;
             }
@@ -3017,6 +3037,124 @@ self.onmessage = async function(e) {
                 } catch { /* ignore */ }
             });
         }
+    }
+
+    // ---- Savegame preview ----
+
+    function showSavegamePreview(container, save, filename, rawData) {
+        const typeLabel = save.saveType || 'HoMM3 Savegame';
+        const nameLine = save.name ? escapeHtml(save.name) : '<em>(unnamed)</em>';
+        const descLine = save.description ? `<p class="map-preview-desc">${formatH3Text(save.description)}</p>` : '';
+
+        // Map / campaign reference
+        const mapFileLine = save.mapFilename
+            ? `<div class="map-meta-item"><span class="map-meta-label">Map file</span><span class="map-meta-value">${escapeHtml(save.mapFilename)}</span></div>`
+            : '';
+
+        // Embedded map header info (parsed directly from savegame buffer)
+        const mh = save.mapHeader;
+        let mapInfoHtml = '';
+        if (mh) {
+            const sizeStr = `${mh.mapSize}×${mh.mapSize}${mh.hasUnderground ? ' + UG' : ''} (${mh.mapSizeLabel || mh.mapSize})`;
+            const mapNameStr = mh.mapName ? escapeHtml(mh.mapName) : '<em>(unknown)</em>';
+            mapInfoHtml = `
+                <div class="map-meta-item"><span class="map-meta-label">Map name</span><span class="map-meta-value">${mapNameStr}</span></div>
+                <div class="map-meta-item"><span class="map-meta-label">Map version</span><span class="map-meta-value">${escapeHtml(mh.h3mVersionName)}</span></div>
+                <div class="map-meta-item"><span class="map-meta-label">Map size</span><span class="map-meta-value">${sizeStr}</span></div>`;
+        }
+
+        // Active-hero table (encoding-aware, rebuilt on encoding change)
+        function buildHeroTable(heroes, encoding) {
+            if (!heroes || heroes.length === 0) return '';
+            const COLOR_ICONS = ['🔴','🔵','🟤','🟢','🟠','🟣','🩵','🩷'];
+            const rows = heroes.map(h => {
+                const colorIcon = h.faction < 8 ? COLOR_ICONS[h.faction] : '⚪';
+                const armyStr = h.army.map(a => `${a.count}×${a.name}`).join(', ') || '—';
+                const skillStr = h.skills.map(sk => `${sk.level} ${sk.name}`).join(', ') || '—';
+                return `<tr>
+                    <td>${colorIcon} ${escapeHtml(h.factionName)}</td>
+                    <td>${escapeHtml(h.name)}</td>
+                    <td>${h.level}</td>
+                    <td>${h.attack}/${h.defense}/${h.power}/${h.knowledge}</td>
+                    <td>${h.exp.toLocaleString()}</td>
+                    <td class="sav-army-cell" title="${escapeHtml(armyStr)}">${escapeHtml(armyStr.length > 40 ? armyStr.slice(0,40)+'…' : armyStr)}</td>
+                    <td class="sav-skill-cell" title="${escapeHtml(skillStr)}">${escapeHtml(skillStr.length > 40 ? skillStr.slice(0,40)+'…' : skillStr)}</td>
+                </tr>`;
+            }).join('');
+            return `
+                <div class="map-section">
+                    <h3 class="map-section-title">Active Heroes (${heroes.length})</h3>
+                    <div class="sav-hero-table-wrap">
+                        <table class="sav-hero-table">
+                            <thead><tr>
+                                <th>Player</th><th>Name</th><th>Lv</th>
+                                <th>A/D/P/K</th><th>Exp</th><th>Army</th><th>Skills</th>
+                            </tr></thead>
+                            <tbody>${rows}</tbody>
+                        </table>
+                    </div>
+                </div>`;
+        }
+
+        let currentEncoding = state.savEncoding || 'windows-1252';
+        let activeHeroes = save.activeHeroes || [];
+
+        container.innerHTML = `
+            <div class="preview-wrapper">
+                <div class="preview-header">
+                    <span class="preview-filename">${escapeHtml(filename)}</span>
+                    <div class="preview-meta">
+                        <span>${escapeHtml(typeLabel)}</span>
+                        <span>${escapeHtml(save.versionName)}</span>
+                    </div>
+                    <button class="preview-toolbar-toggle" title="More options">&#9776;</button>
+                    <div class="preview-toolbar">
+                        ${buildEncodingSelectHtml('windows-1252', currentEncoding, 'sav-encoding-select')}
+                        ${rawData ? `<button title="Show file hashes" id="sav-hash-btn"># Hash</button>` : ''}
+                        ${rawData ? `<button title="Export original savegame" id="sav-export-btn">💾 Export</button>` : ''}
+                    </div>
+                </div>
+                <div class="preview-body map-preview-body">
+                    <div class="map-preview-card map-preview-full">
+                        <div class="map-header-row">
+                            <div class="map-header-info">
+                                <div class="map-preview-icon">💾</div>
+                                <h2 class="map-preview-name">${nameLine}</h2>
+                            </div>
+                        </div>
+                        <div class="map-preview-meta-grid">
+                            <div class="map-meta-item"><span class="map-meta-label">File type</span><span class="map-meta-value">${escapeHtml(typeLabel)}</span></div>
+                            <div class="map-meta-item"><span class="map-meta-label">Game version</span><span class="map-meta-value">${escapeHtml(save.versionName)} (${save.versionMajor}.${save.versionMinor})</span></div>
+                            ${mapFileLine}
+                            ${mapInfoHtml}
+                            <div class="map-meta-item"><span class="map-meta-label">Compressed size</span><span class="map-meta-value">${formatSize(save.compressedSize)}</span></div>
+                            <div class="map-meta-item"><span class="map-meta-label">Decompressed size</span><span class="map-meta-value">${formatSize(save.decompressedSize)}</span></div>
+                        </div>
+                        ${descLine}
+                        <div id="sav-hero-section">${buildHeroTable(activeHeroes, currentEncoding)}</div>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        container.querySelector('.preview-toolbar-toggle')?.addEventListener('click', () =>
+            container.querySelector('.preview-header').classList.toggle('toolbar-expanded'));
+        const hashBtn = container.querySelector('#sav-hash-btn');
+        if (hashBtn && rawData) hashBtn.addEventListener('click', () => showHashModal(filename, typeLabel, rawData));
+        const exportBtn = container.querySelector('#sav-export-btn');
+        if (exportBtn && rawData) exportBtn.addEventListener('click', () => exportBlob(new Blob([rawData]), filename));
+
+        // Encoding selector: re-extract heroes with new encoding
+        const encSelect = container.querySelector('#sav-encoding-select');
+        if (encSelect && save._decompressed) {
+            encSelect.addEventListener('change', (e) => {
+                currentEncoding = e.target.value;
+                state.savEncoding = currentEncoding;
+                const newHeroes = H3Sav.filterActiveHeroes(H3Sav.extractHeroes(save._decompressed, currentEncoding));
+                container.querySelector('#sav-hero-section').innerHTML = buildHeroTable(newHeroes, currentEncoding);
+            });
+        }
+
     }
 
     function showH3MPreview(container, map, filename, rawData) {

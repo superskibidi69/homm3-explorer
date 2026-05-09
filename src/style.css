@@ -1042,6 +1042,49 @@ body {
     border-bottom: 1px solid var(--border);
 }
 
+/* Savegame: open-map button section */
+.sav-open-section {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+/* Savegame: hero table */
+.sav-hero-table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm, 4px);
+}
+.sav-hero-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    white-space: nowrap;
+}
+.sav-hero-table th {
+    background: var(--bg-secondary);
+    padding: 5px 8px;
+    text-align: left;
+    font-weight: 600;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+}
+.sav-hero-table td {
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+}
+.sav-hero-table tr:last-child td { border-bottom: none; }
+.sav-hero-table tr:hover td { background: var(--bg-hover, var(--bg-secondary)); }
+.sav-army-cell, .sav-skill-cell {
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text-secondary);
+}
+
 /* Players grid */
 .map-players-grid {
     display: flex;

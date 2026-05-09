@@ -48,7 +48,7 @@
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                     <span>Demo</span>
                 </button>
-                <input type="file" id="file-input" accept=".lod,.pak,.pac,.snd,.vid,.def,.d32,.pcx,.p32,.fnt,.dat,.zip,.run,.exe,.iso,.sit,.h3m,.h3c,.h3t" multiple style="display:none">
+                <input type="file" id="file-input" accept=".lod,.pak,.pac,.snd,.vid,.def,.d32,.pcx,.p32,.fnt,.dat,.zip,.run,.exe,.iso,.sit,.h3m,.h3c,.h3t,.gm1,.gm2,.tgm,.cgm" multiple style="display:none">
                 <input type="file" id="bin-input" accept=".bin" style="display:none">
             </div>
         </header>
@@ -88,6 +88,10 @@
                         <span class="format-badge">.H3M</span>
                         <span class="format-badge">.H3C</span>
                         <span class="format-badge">.H3T</span>
+                        <span class="format-badge">.GM1</span>
+                        <span class="format-badge">.GM2</span>
+                        <span class="format-badge">.TGM</span>
+                        <span class="format-badge">.CGM</span>
                         <span class="format-badge format-badge-exe">.EXE</span>
                         <span class="format-badge format-badge-exe">.ISO</span>
                         <span class="format-badge format-badge-exe">.SIT</span>
@@ -214,7 +218,7 @@
                     <span style="font-size:40px">⚔️</span>
                     <h2 id="about-title">HoMM3 Explorer</h2>
                 </div>
-                <p class="about-desc">A browser-based file explorer for <strong>Heroes of Might &amp; Magic III</strong> archive formats. Browse, preview, and export assets — images, animations, sounds, fonts, videos, maps, and RMG templates — directly from LOD, PAK, SND, VID, DEF, PCX, D32, FNT, H3M, H3C, H3T, EXE (GOG/Inno&nbsp;Setup, InstallShield), ISO disc images, SIT (StuffIt) archives, and Mac VISE&nbsp;3.6 installers without installing anything.</p>
+                <p class="about-desc">A browser-based file explorer for <strong>Heroes of Might &amp; Magic III</strong> archive formats. Browse, preview, and export assets — images, animations, sounds, fonts, videos, maps, RMG templates, and savegames — directly from LOD, PAK, SND, VID, DEF, PCX, D32, FNT, H3M, H3C, H3T, GM1/GM2/TGM/CGM savegames, EXE (GOG/Inno&nbsp;Setup, InstallShield), ISO disc images, SIT (StuffIt) archives, and Mac VISE&nbsp;3.6 installers without installing anything.</p>
 
                 <div class="about-section">
                     <h3>Made by</h3>
@@ -227,6 +231,7 @@
                         <li><a href="https://ffmpeg.org" target="_blank" rel="noopener">FFmpeg</a> &mdash; SMK &amp; BIK video decoder algorithms (LGPL&nbsp;2.1+)</li>
                         <li><a href="https://vcmi.eu" target="_blank" rel="noopener">VCMI Project</a> &mdash; HoMM3 format research &amp; documentation</li>
                         <li><a href="https://github.com/dscharrer/innoextract" target="_blank" rel="noopener">innoextract</a> &mdash; Inno Setup installer format research &amp; structure</li>
+                        <li><a href="https://github.com/suurjaak/h3sed" target="_blank" rel="noopener">h3sed</a> &mdash; HoMM3 savegame editor, savegame format reference</li>
                     </ul>
                 </div>
 
@@ -265,6 +270,7 @@
     <script src="hfsextract.js"></script>
     <script src="viseextract.js"></script>
     <script src="h3mparser.js"></script>
+    <script src="h3savparser.js"></script>
     <script src="app.js"></script>
 </body>
 </html>
