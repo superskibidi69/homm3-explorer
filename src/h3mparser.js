@@ -2794,15 +2794,19 @@ const H3Map = (() => {
         // HotA-specific header fields
         if (isHotA) {
             campaign.hotaFormatVersion = r.i32();
-            if (campaign.hotaFormatVersion === 2) {
+            // Format versions: 0/1 = HotA 1.7.0, 2 = HotA 1.7.3, 3+ = HotA 1.8.0+
+            // version triple only for formatVersion == 2 (and by extension >= 2 for newer).
+            // unknownB + unknownC + scenarioCount are ALWAYS present for any HotA format.
+            if (campaign.hotaFormatVersion >= 2) {
                 campaign.hotaVersionMajor = r.u32();
                 campaign.hotaVersionMinor = r.u32();
                 campaign.hotaVersionPatch = r.u32();
                 campaign.versionName += ` v${campaign.hotaVersionMajor}.${campaign.hotaVersionMinor}.${campaign.hotaVersionPatch}`;
                 campaign.hotaForceMatchingVersion = r.bool();
-                r.i8();  // unknownB
-                r.i32(); // unknownC
             }
+            // Always present for ALL HotA format versions (including 0 and 1):
+            r.i8();  // unknownB (assert == 1)
+            r.i32(); // unknownC (assert == 0)
             campaign.scenarioCount = r.i32();
         }
 
@@ -2820,9 +2824,9 @@ const H3Map = (() => {
             campaign.music = r.u8();
         }
 
-        // Scenario count from remaining map blocks (for non-HotA)
-        if (!isHotA) {
-            campaign.scenarioCount = decompressedMaps.length;
+        // Scenario count from remaining map blocks when header doesn't contain it
+        if (!isHotA || !campaign.scenarioCount) {
+            campaign.scenarioCount = mapBlocks.length - mapBlocksStart;
         }
 
         // Parse scenario definitions
@@ -2882,41 +2886,54 @@ const H3Map = (() => {
                     const creatureBytes = isHotA ? 24 : 19;
                     r.skip(creatureBytes);
 
-                    // Artifact bitmask: HotA=21, SoD+(normVer>=6)=18, RoE/AB=17
-                    const artifactBytes = isHotA ? 21 : (normVer >= 6 ? 18 : 17);
+                    // Artifact bitmask size (campaign travel section):
+                    //   HotA 1.8.0+ (fmtVer >= 3): 30 bytes (240 artifact bits, HotA added many new artifacts)
+                    //   HotA 1.7.x (fmtVer <= 2): 21 bytes
+                    //   SoD/Chr (normVer >= 6): 18 bytes
+                    //   RoE/AB: 17 bytes
+                    const artifactBytes = isHotA
+                        ? (campaign.hotaFormatVersion >= 3 ? 30 : 21)
+                        : (normVer >= 6 ? 18 : 17);
                     r.skip(artifactBytes);
 
                     sc.startOptions = r.u8();
 
+                    // playerColor is ONLY present when startOptions == 1 (START_BONUS)
                     if (sc.startOptions === 1) {
                         sc.bonusPlayerColor = r.u8();
                     }
 
+                    // numBonuses is ONLY present when startOptions != 0 (not NONE)
                     if (sc.startOptions !== 0) {
                         const numBonuses = r.u8();
-                        sc.bonuses = [];
-                        for (let b = 0; b < numBonuses; b++) {
-                            const bonus = {};
-                            if (sc.startOptions === 1) {
-                                bonus.type = r.u8();
-                                switch (bonus.type) {
-                                    case 0: bonus.heroId = r.i16(); bonus.spellId = r.u8(); break;
-                                    case 1: bonus.heroId = r.i16(); bonus.creatureId = r.u16(); bonus.amount = r.u16(); break;
-                                    case 2: bonus.buildingId = r.u8(); break;
-                                    case 3: bonus.heroId = r.i16(); bonus.artifactId = r.u16(); break;
-                                    case 4: bonus.heroId = r.i16(); bonus.spellId = r.u8(); break;
-                                    case 5: bonus.heroId = r.i16(); bonus.stats = [r.u8(), r.u8(), r.u8(), r.u8()]; break;
-                                    case 6: bonus.heroId = r.i16(); bonus.skillId = r.u8(); bonus.mastery = r.u8(); break;
-                                    case 7: bonus.resourceType = r.i8(); bonus.amount = r.i32(); break;
+                        if (numBonuses > 0) {
+                            sc.bonuses = [];
+                            for (let b = 0; b < numBonuses; b++) {
+                                const bonus = {};
+                                if (sc.startOptions === 1) {
+                                    // START_BONUS: type byte + type-specific fields
+                                    bonus.type = r.u8();
+                                    switch (bonus.type) {
+                                        case 0: bonus.heroId = r.i16(); bonus.spellId = r.u8(); break;       // SPELL
+                                        case 1: bonus.heroId = r.i16(); bonus.creatureId = r.u16(); bonus.amount = r.u16(); break; // CREATURE
+                                        case 2: bonus.buildingId = r.u8(); break;                           // BUILDING
+                                        case 3: bonus.heroId = r.i16(); bonus.artifactId = r.u16(); break;  // ARTIFACT
+                                        case 4: bonus.heroId = r.i16(); bonus.spellId = r.u8(); break;      // SPELL_SCROLL
+                                        case 5: bonus.heroId = r.i16(); bonus.stats = [r.u8(), r.u8(), r.u8(), r.u8()]; break; // PRIMARY_SKILL
+                                        case 6: bonus.heroId = r.i16(); bonus.skillId = r.u8(); bonus.mastery = r.u8(); break;  // SECONDARY_SKILL
+                                        case 7: bonus.resourceType = r.i8(); bonus.amount = r.i32(); break; // RESOURCE
+                                    }
+                                } else if (sc.startOptions === 2) {
+                                    // HERO_CROSSOVER: playerColor + scenarioId
+                                    bonus.playerColor = r.u8();
+                                    bonus.scenarioId = r.u8();
+                                } else if (sc.startOptions === 3) {
+                                    // HERO_OPTIONS: playerColor + heroId
+                                    bonus.playerColor = r.u8();
+                                    bonus.heroId = r.i16();
                                 }
-                            } else if (sc.startOptions === 2) {
-                                bonus.playerColor = r.u8();
-                                bonus.scenarioId = r.u8();
-                            } else if (sc.startOptions === 3) {
-                                bonus.playerColor = r.u8();
-                                bonus.heroId = r.i16();
+                                sc.bonuses.push(bonus);
                             }
-                            sc.bonuses.push(bonus);
                         }
                     }
                 } // end hasScenarioMeta
