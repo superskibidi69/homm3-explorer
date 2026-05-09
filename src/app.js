@@ -1340,14 +1340,14 @@ self.onmessage = async function(e) {
                     showDatPreview(preview, datParsed, file.name, info.data);
                 } else if (info.type === 'map') {
                     let mapParsed = info.parsed;
-                    if (state.mapEncoding !== 'auto' && info.data) {
-                        try { mapParsed = H3Map.parseH3M(info.data, { encoding: state.mapEncoding }); } catch { /* fallback to cached */ }
+                    if (info.data) {
+                        try { mapParsed = parseH3MAutoEnc(info.data); } catch { /* fallback to cached */ }
                     }
                     showH3MPreview(preview, mapParsed, file.name, info.data);
                 } else if (info.type === 'campaign') {
                     let campaignParsed = info.parsed;
-                    if (state.mapEncoding !== 'auto' && info.data) {
-                        try { campaignParsed = await H3Map.parseH3C(info.data, { encoding: state.mapEncoding }); } catch { /* fallback to cached */ }
+                    if (info.data) {
+                        try { campaignParsed = await parseH3CAutoEnc(info.data); } catch { /* fallback to cached */ }
                     }
                     showH3CPreview(preview, campaignParsed, file.name, info.data);
                 } else if (info.type === 'h3t') {
@@ -1407,14 +1407,14 @@ self.onmessage = async function(e) {
                     showAudioPreview(preview, data, file.name);
                 } else if (ext === 'h3m') {
                     try {
-                        const mapData = H3Map.parseH3M(data, { encoding: state.mapEncoding !== 'auto' ? state.mapEncoding : null });
+                        const mapData = parseH3MAutoEnc(data);
                         showH3MPreview(preview, mapData, file.name, data);
                     } catch (e) {
                         showMapPreviewFallback(preview, file.name, data, e);
                     }
                 } else if (ext === 'h3c') {
                     try {
-                        const campaign = await H3Map.parseH3C(data, { encoding: state.mapEncoding !== 'auto' ? state.mapEncoding : null });
+                        const campaign = await parseH3CAutoEnc(data);
                         showH3CPreview(preview, campaign, file.name, data);
                     } catch (e) {
                         showMapPreviewFallback(preview, file.name, data, e);
@@ -1442,14 +1442,14 @@ self.onmessage = async function(e) {
                 const ext = file.ext || file.name.split('.').pop().toLowerCase();
                 if (ext === 'h3c') {
                     try {
-                        const campaign = await H3Map.parseH3C(data, { encoding: state.mapEncoding !== 'auto' ? state.mapEncoding : null });
+                        const campaign = await parseH3CAutoEnc(data);
                         showH3CPreview(preview, campaign, file.name, data);
                     } catch (e) {
                         showMapPreviewFallback(preview, file.name, data, e);
                     }
                 } else {
                     try {
-                        const mapData = H3Map.parseH3M(data, { encoding: state.mapEncoding !== 'auto' ? state.mapEncoding : null });
+                        const mapData = parseH3MAutoEnc(data);
                         showH3MPreview(preview, mapData, file.name, data);
                     } catch (e) {
                         showMapPreviewFallback(preview, file.name, data, e);
@@ -2117,6 +2117,32 @@ self.onmessage = async function(e) {
     }
 
     // ---- Encoding detection ----
+
+    /**
+     * Parse an H3M/H3C file with automatic encoding detection.
+     * When state.mapEncoding is 'auto':
+     *   1. Parse once with no encoding (collects raw string bytes).
+     *   2. Detect encoding from those bytes.
+     *   3. If not UTF-8, re-parse with the detected encoding so text is correct.
+     * When state.mapEncoding is explicit, parse once with that encoding.
+     */
+    function parseH3MAutoEnc(data) {
+        const enc = state.mapEncoding !== 'auto' ? state.mapEncoding : null;
+        const first = H3Map.parseH3M(data, { encoding: enc });
+        if (enc !== null || !first._rawStringBytes?.length) return first;
+        const detected = detectEncoding(first._rawStringBytes);
+        if (detected === 'utf-8') return first;
+        return H3Map.parseH3M(data, { encoding: detected });
+    }
+    async function parseH3CAutoEnc(data) {
+        const enc = state.mapEncoding !== 'auto' ? state.mapEncoding : null;
+        const first = await H3Map.parseH3C(data, { encoding: enc });
+        if (enc !== null || !first._rawStringBytes?.length) return first;
+        const detected = detectEncoding(first._rawStringBytes);
+        if (detected === 'utf-8') return first;
+        return H3Map.parseH3C(data, { encoding: detected });
+    }
+
     function detectEncoding(data) {
         // BOM detection
         if (data.length >= 3 && data[0] === 0xEF && data[1] === 0xBB && data[2] === 0xBF) return 'utf-8';
@@ -3419,7 +3445,7 @@ self.onmessage = async function(e) {
         container.querySelector('#map-encoding-select')?.addEventListener('change', (e) => {
             state.mapEncoding = e.target.value;
             if (rawData) {
-                const enc = state.mapEncoding === 'auto' ? null : state.mapEncoding;
+                const enc = state.mapEncoding === 'auto' ? detectedMapEnc : state.mapEncoding;
                 try {
                     const reparsed = H3Map.parseH3M(rawData, { encoding: enc });
                     showH3MPreview(container, reparsed, filename, rawData);
@@ -3582,7 +3608,7 @@ self.onmessage = async function(e) {
         container.querySelector('#map-encoding-select')?.addEventListener('change', async (e) => {
             state.mapEncoding = e.target.value;
             if (rawData) {
-                const enc = state.mapEncoding === 'auto' ? null : state.mapEncoding;
+                const enc = state.mapEncoding === 'auto' ? detectedMapEnc : state.mapEncoding;
                 try {
                     const reparsed = await H3Map.parseH3C(rawData, { encoding: enc });
                     showH3CPreview(container, reparsed, filename, rawData);
@@ -5241,13 +5267,13 @@ self.onmessage = async function(e) {
             state.sourceFiles.set(displayName, { data, filetype: 'HotA DAT (' + source + ')' });
         } else if (ext === 'h3m') {
             try {
-                const parsed = H3Map.parseH3M(data);
+                const parsed = parseH3MAutoEnc(data);
                 state.standaloneFiles.set(displayName, { data, type: 'map', parsed });
                 state.sourceFiles.set(displayName, { data, filetype: 'H3M Map (' + source + ')' });
             } catch { state.standaloneFiles.set(displayName, { data, type: ext }); }
         } else if (ext === 'h3c') {
             try {
-                const parsed = await H3Map.parseH3C(data);
+                const parsed = await parseH3CAutoEnc(data);
                 state.standaloneFiles.set(displayName, { data, type: 'campaign', parsed });
                 state.sourceFiles.set(displayName, { data, filetype: 'H3C Campaign (' + source + ')' });
             } catch { state.standaloneFiles.set(displayName, { data, type: ext }); }
