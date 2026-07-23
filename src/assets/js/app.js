@@ -24,6 +24,7 @@
         // Explorer
         viewMode: 'grid', // 'list' | 'grid'
         iconSize: 64,
+        fileListSort: 'name',
 
         // DEF viewer state
         currentDef: null,
@@ -99,9 +100,71 @@
         els.iconSizeSlider = $('#icon-size-slider');
         els.iconSizeControl = $('#icon-size-control');
         els.extFilter = $('#ext-filter');
+        els.fileSort = $('#file-sort');
         els.btnDownloadOriginal = $('#btn-download-archive-original');
         els.btnDownloadZip = $('#btn-download-archive-zip');
         els.btnDownloadHashes = $('#btn-download-hashes');
+        els.btnExportVisibleZip = $('#btn-export-visible-zip');
+        els.btnExportVisibleZip = $('#btn-export-visible-zip');
+    }
+
+    function setupMenuImageToggle(imgEl) {
+        if (!imgEl || !imgEl.classList.contains('welcome-icon-image')) return;
+        const trigger = imgEl.closest('.welcome-icon');
+        if (!trigger) return;
+
+        const setImage = active => {
+            imgEl.src = active ? 'assets/image/mm0.png' : 'assets/image/mm1.png';
+        };
+
+        trigger.addEventListener('mousedown', () => setImage(true));
+        trigger.addEventListener('mouseup', () => setImage(false));
+        trigger.addEventListener('mouseleave', () => setImage(false));
+        trigger.addEventListener('touchstart', () => setImage(true), { passive: true });
+        trigger.addEventListener('touchend', () => setImage(false));
+        trigger.addEventListener('click', () => setImage(false));
+        setImage(false);
+    }
+
+    async function openDemoCacheDb() {
+        if (!window.indexedDB) return null;
+        return new Promise((resolve, reject) => {
+            const req = indexedDB.open('homm3-explorer-cache', 1);
+            req.onupgradeneeded = () => {
+                const db = req.result;
+                if (!db.objectStoreNames.contains('runs')) {
+                    db.createObjectStore('runs', { keyPath: 'id' });
+                }
+            };
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+    }
+
+    async function getCachedDemoBlob() {
+        const db = await openDemoCacheDb();
+        if (!db) return null;
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction('runs', 'readonly');
+            const store = tx.objectStore('runs');
+            const req = store.get('heroes3-demo.run');
+            req.onsuccess = () => resolve(req.result?.blob || null);
+            req.onerror = () => reject(req.error);
+            tx.oncomplete = () => db.close();
+        });
+    }
+
+    async function setCachedDemoBlob(blob) {
+        const db = await openDemoCacheDb();
+        if (!db || !blob) return;
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction('runs', 'readwrite');
+            const store = tx.objectStore('runs');
+            const req = store.put({ id: 'heroes3-demo.run', blob, updatedAt: Date.now() });
+            req.onsuccess = () => resolve();
+            req.onerror = () => reject(req.error);
+            tx.oncomplete = () => db.close();
+        });
     }
 
     // ---- Utilities ----
@@ -194,7 +257,7 @@
             const zipName = state.archiveName.replace(/\.[^.]+$/, '') + '.zip';
             const fileData = [];
             for (const f of state.fileList) {
-                if (f.standalone) continue;
+                if (f.standalone || f.category === 'sheet') continue;
                 try {
                     const bytes = await state.archive.getFile(f.name);
                     if (bytes) fileData.push({ name: f.name, bytes });
@@ -207,6 +270,50 @@
         } finally {
             btn.disabled = false;
             btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg> ZIP';
+        }
+    }
+
+    async function exportVisibleFilesAsZip() {
+        const btn = els.btnExportVisibleZip;
+        if (!btn) return;
+        if (!state.archive && state.standaloneFiles.size === 0) return;
+        btn.disabled = true;
+        btn.textContent = 'Packing…';
+        try {
+            const filterLower = ($('#file-search')?.value || '').toLowerCase();
+            const extFilterVal = els.extFilter?.value || '';
+            const visible = state.fileList.filter(f => {
+                if (filterLower && !f.name.toLowerCase().includes(filterLower)) return false;
+                if (extFilterVal && f.ext !== extFilterVal) return false;
+                return !f.standalone && f.category !== 'sheet';
+            });
+            if (!visible.length) {
+                toast('Nothing visible to export right now.', 'warning');
+                return;
+            }
+
+            const fileData = [];
+            for (const file of visible) {
+                try {
+                    let bytes = null;
+                    if (state.archive) {
+                        bytes = await state.archive.getFile(file.name);
+                    } else {
+                        const info = state.standaloneFiles.get(file.name);
+                        if (info?.data) bytes = info.data;
+                    }
+                    if (bytes) fileData.push({ name: file.name, bytes });
+                } catch (_) { /* skip unreadable entries */ }
+            }
+
+            const zipName = `${(state.archiveName || 'export').replace(/\.[^.]+$/, '') || 'export'}.zip`;
+            exportBlob(new Blob([buildZip(fileData)]), zipName);
+            toast(`Exported ${fileData.length} visible file(s) as ${zipName}`, 'success');
+        } catch (err) {
+            toast('Bulk export failed: ' + err.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg> Export';
         }
     }
 
@@ -305,6 +412,14 @@
 
     function exportCanvasAsPng(canvas, filename) {
         canvas.toBlob(blob => { if (blob) exportBlob(blob, filename); }, 'image/png');
+    }
+
+    function exportPlayableAudio(audioData, filename, mimeType = 'audio/wav') {
+        const isMp3 = mimeType === 'audio/mpeg';
+        const ext = isMp3 ? '.mp3' : '.wav';
+        const base = filename.replace(/\.[^.]+$/, '');
+        const outName = filename.toLowerCase().endsWith(ext) ? filename : `${base}${ext}`;
+        exportBlob(new Blob([audioData], { type: mimeType }), outName);
     }
 
     // ---- Hash computation ----
@@ -992,6 +1107,21 @@ self.onmessage = async function(e) {
     }
 
     // ---- Build file list from LOD ----
+    function sortFileList() {
+        const dir = state.fileListSort === 'type' ? 'type' : state.fileListSort === 'ext' ? 'ext' : 'name';
+        state.fileList.sort((a, b) => {
+            if (dir === 'type') {
+                const typeCmp = (a.category || '').localeCompare(b.category || '');
+                if (typeCmp !== 0) return typeCmp;
+            }
+            if (dir === 'ext') {
+                const extCmp = (a.ext || '').localeCompare(b.ext || '');
+                if (extCmp !== 0) return extCmp;
+            }
+            return (a.name || '').localeCompare(b.name || '');
+        });
+    }
+
     function buildFileList() {
         const list = state.archive.getFilelist();
         const isHota18 = state.archive.isHota18;
@@ -1114,6 +1244,72 @@ self.onmessage = async function(e) {
             container.style.setProperty('--icon-size', state.iconSize + 'px');
         }
 
+        const renderChunk = (items, start, batchSize = 120) => {
+            const end = Math.min(start + batchSize, items.length);
+            for (let i = start; i < end; i++) {
+                const file = items[i];
+                const item = document.createElement('div');
+                item.className = 'file-item';
+                item.dataset.filename = file.name;
+
+                if (isGrid) {
+                    item.style.width = Math.max(state.iconSize + 16, 72) + 'px';
+                    const iconDiv = document.createElement('div');
+                    iconDiv.className = 'file-item-icon';
+                    iconDiv.style.height = state.iconSize + 'px';
+
+                    // Show thumbnail for image types in grid view (lazy loaded)
+                    const canThumb = (file.ext === 'pcx' || file.ext === 'p32' || file.ext === 'def') && state.archiveType === 'lod';
+                    if (canThumb) {
+                        iconDiv.textContent = getFileIcon(file.ext);
+                        iconDiv.dataset.lazyThumb = file.name;
+                        iconDiv.dataset.lazyExt = file.ext;
+                    } else {
+                        iconDiv.textContent = file.isAudio ? '🔊' : getFileIcon(file.ext);
+                    }
+
+                    const nameDiv = document.createElement('div');
+                    nameDiv.className = 'file-item-name';
+                    nameDiv.textContent = file.name;
+
+                    item.appendChild(iconDiv);
+                    item.appendChild(nameDiv);
+                } else {
+                    const icon = file.isAudio ? '🔊' : getFileIcon(file.ext);
+                    item.innerHTML = `
+                        <span class="file-item-icon">${icon}</span>
+                        <span class="file-item-name">${escapeHtml(file.name)}</span>
+                        <span class="file-item-ext ext-${file.ext}">${file.ext}</span>
+                    `;
+                }
+
+                item.addEventListener('click', () => selectFile(file));
+                container.appendChild(item);
+            }
+
+            if (end < items.length) {
+                requestAnimationFrame(() => renderChunk(items, end, batchSize));
+            } else if (isGrid) {
+                const lazyEls = container.querySelectorAll('[data-lazy-thumb]');
+                if (lazyEls.length > 0) {
+                    const observer = new IntersectionObserver((entries) => {
+                        for (const entry of entries) {
+                            if (entry.isIntersecting) {
+                                const el = entry.target;
+                                const fname = el.dataset.lazyThumb;
+                                if (fname) {
+                                    loadThumbnail(fname, el, el.dataset.lazyExt || undefined);
+                                    delete el.dataset.lazyThumb;
+                                }
+                                observer.unobserve(el);
+                            }
+                        }
+                    }, { root: container, rootMargin: '200px' });
+                    lazyEls.forEach(el => observer.observe(el));
+                }
+            }
+        };
+
         // PAK tree view: group sprites under their sheet when in list mode and no ext filter
         const usePakTree = state.archiveType === 'pak' && !isGrid && !extFilterVal;
 
@@ -1201,65 +1397,8 @@ self.onmessage = async function(e) {
             return;
         }
 
-        for (const file of filtered) {
-            const item = document.createElement('div');
-            item.className = 'file-item';
-            item.dataset.filename = file.name;
-
-            if (isGrid) {
-                item.style.width = Math.max(state.iconSize + 16, 72) + 'px';
-                const iconDiv = document.createElement('div');
-                iconDiv.className = 'file-item-icon';
-                iconDiv.style.height = state.iconSize + 'px';
-
-                // Show thumbnail for image types in grid view (lazy loaded)
-                const canThumb = (file.ext === 'pcx' || file.ext === 'p32' || file.ext === 'def') && state.archiveType === 'lod';
-                if (canThumb) {
-                    iconDiv.textContent = getFileIcon(file.ext);
-                    iconDiv.dataset.lazyThumb = file.name;
-                    iconDiv.dataset.lazyExt = file.ext; // store detected ext for HotA 1.8
-                } else {
-                    iconDiv.textContent = file.isAudio ? '🔊' : getFileIcon(file.ext);
-                }
-
-                const nameDiv = document.createElement('div');
-                nameDiv.className = 'file-item-name';
-                nameDiv.textContent = file.name;
-
-                item.appendChild(iconDiv);
-                item.appendChild(nameDiv);
-            } else {
-                const icon = file.isAudio ? '🔊' : getFileIcon(file.ext);
-                item.innerHTML = `
-                    <span class="file-item-icon">${icon}</span>
-                    <span class="file-item-name">${escapeHtml(file.name)}</span>
-                    <span class="file-item-ext ext-${file.ext}">${file.ext}</span>
-                `;
-            }
-
-            item.addEventListener('click', () => selectFile(file));
-            container.appendChild(item);
-        }
-
-        // Lazy load thumbnails using IntersectionObserver
-        if (isGrid) {
-            const lazyEls = container.querySelectorAll('[data-lazy-thumb]');
-            if (lazyEls.length > 0) {
-                const observer = new IntersectionObserver((entries) => {
-                    for (const entry of entries) {
-                        if (entry.isIntersecting) {
-                            const el = entry.target;
-                            const fname = el.dataset.lazyThumb;
-                            if (fname) {
-                                loadThumbnail(fname, el, el.dataset.lazyExt || undefined);
-                                delete el.dataset.lazyThumb;
-                            }
-                            observer.unobserve(el);
-                        }
-                    }
-                }, { root: container, rootMargin: '200px' });
-                lazyEls.forEach(el => observer.observe(el));
-            }
+        if (filtered.length > 0) {
+            renderChunk(filtered, 0, Math.min(120, filtered.length));
         }
     }
 
@@ -4165,8 +4304,7 @@ self.onmessage = async function(e) {
         }
         const exportBtn = container.querySelector('#audio-export-btn');
         if (exportBtn) {
-            const exportName = !filename.includes('.') ? filename + '.wav' : filename;
-            exportBtn.addEventListener('click', () => exportBlob(new Blob([data]), exportName));
+            exportBtn.addEventListener('click', () => exportPlayableAudio(audioData, filename, mimeType));
         }
 
         // Register cleanup for file switching (stop audio immediately)
@@ -4224,7 +4362,9 @@ self.onmessage = async function(e) {
                         <span>${formatSize(data.length)}</span>
                     </div>
                     <div class="preview-toolbar">
-                        <button id="video-export-btn" title="Export original file">💾</button>
+                        <button id="video-export-btn" title="Export original file">💾 Orig</button>
+                        <button id="video-export-png-btn" title="Export all frames as PNG">🖼️ PNG</button>
+                        <button id="video-export-gif-btn" title="Export animation as GIF">🎞️ GIF</button>
                     </div>
                 </div>
                 <div class="preview-body" style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px;">
@@ -4248,6 +4388,8 @@ self.onmessage = async function(e) {
         const slider = container.querySelector('#video-slider');
         const frameLabel = container.querySelector('#video-frame-label');
         const exportBtn = container.querySelector('#video-export-btn');
+        const exportPngBtn = container.querySelector('#video-export-png-btn');
+        const exportGifBtn = container.querySelector('#video-export-gif-btn');
 
         let currentFrame = 0;
         let playing = false;
@@ -4316,6 +4458,67 @@ self.onmessage = async function(e) {
         nextBtn.addEventListener('click', () => { stop(); renderFrame(Math.min(nframes - 1, currentFrame + 1)); });
         slider.addEventListener('input', () => { stop(); renderFrame(parseInt(slider.value)); });
         exportBtn.addEventListener('click', () => exportBlob(new Blob([data]), filename));
+        exportPngBtn?.addEventListener('click', () => {
+            const base = filename.replace(/\.[^.]+$/, '');
+            for (let i = 0; i < nframes; i++) {
+                const frameCanvas = document.createElement('canvas');
+                frameCanvas.width = width;
+                frameCanvas.height = height;
+                const frameCtx = frameCanvas.getContext('2d');
+                const indexed = indexedFrames[i];
+                const pal = palettes[i];
+                const imgData = frameCtx.createImageData(width, height);
+                const rgba = imgData.data;
+                for (let j = 0; j < width * height; j++) {
+                    const c = indexed[j];
+                    rgba[j * 4] = pal[c * 3];
+                    rgba[j * 4 + 1] = pal[c * 3 + 1];
+                    rgba[j * 4 + 2] = pal[c * 3 + 2];
+                    rgba[j * 4 + 3] = 255;
+                }
+                frameCtx.putImageData(imgData, 0, 0);
+                exportCanvasAsPng(frameCanvas, `${base}_frame${String(i).padStart(4, '0')}.png`);
+            }
+            toast(`Exported ${nframes} PNG frames`, 'success');
+        });
+        exportGifBtn?.addEventListener('click', async () => {
+            if (typeof GIF === 'undefined') { toast('gif.js not loaded', 'error'); return; }
+            let workerBlob = window._gifWorkerBlob;
+            if (!workerBlob) {
+                try {
+                    const resp = await fetch('https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.worker.js');
+                    const text = await resp.text();
+                    workerBlob = URL.createObjectURL(new Blob([text], { type: 'application/javascript' }));
+                    window._gifWorkerBlob = workerBlob;
+                } catch (e) { toast('Failed to load GIF worker: ' + e.message, 'error'); return; }
+            }
+            const gif = new GIF({ workers: 2, quality: 10, width, height, workerScript: workerBlob, transparent: 0xFF00FF });
+            for (let i = 0; i < nframes; i++) {
+                const frameCanvas = document.createElement('canvas');
+                frameCanvas.width = width;
+                frameCanvas.height = height;
+                const frameCtx = frameCanvas.getContext('2d');
+                const indexed = indexedFrames[i];
+                const pal = palettes[i];
+                const imgData = frameCtx.createImageData(width, height);
+                const rgba = imgData.data;
+                for (let j = 0; j < width * height; j++) {
+                    const c = indexed[j];
+                    rgba[j * 4] = pal[c * 3];
+                    rgba[j * 4 + 1] = pal[c * 3 + 1];
+                    rgba[j * 4 + 2] = pal[c * 3 + 2];
+                    rgba[j * 4 + 3] = 255;
+                }
+                frameCtx.putImageData(imgData, 0, 0);
+                gif.addFrame(makeGifFrame(frameCanvas, width, height), { delay: frameDuration, copy: true });
+            }
+            toast('Encoding GIF...', 'info');
+            gif.on('finished', blob => {
+                exportBlob(blob, `${filename.replace(/\.[^.]+$/, '')}.gif`);
+                toast('GIF exported!', 'success');
+            });
+            gif.render();
+        });
 
         renderFrame(0);
         play();
@@ -4374,7 +4577,9 @@ self.onmessage = async function(e) {
                         <span>${formatSize(data.length)}</span>
                     </div>
                     <div class="preview-toolbar">
-                        <button id="video-export-btn" title="Export original file">💾</button>
+                        <button id="video-export-btn" title="Export original file">💾 Orig</button>
+                        <button id="video-export-png-btn" title="Export all frames as PNG">🖼️ PNG</button>
+                        <button id="video-export-gif-btn" title="Export animation as GIF">🎞️ GIF</button>
                     </div>
                 </div>
                 <div class="preview-body" style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px;">
@@ -4398,6 +4603,8 @@ self.onmessage = async function(e) {
         const slider = container.querySelector('#video-slider');
         const frameLabel = container.querySelector('#video-frame-label');
         const exportBtn = container.querySelector('#video-export-btn');
+        const exportPngBtn = container.querySelector('#video-export-png-btn');
+        const exportGifBtn = container.querySelector('#video-export-gif-btn');
 
         let currentFrame = 0;
         let playing = false;
@@ -4458,6 +4665,51 @@ self.onmessage = async function(e) {
         nextBtn.addEventListener('click', () => { stop(); renderFrame(Math.min(nframes - 1, currentFrame + 1)); });
         slider.addEventListener('input', () => { stop(); renderFrame(parseInt(slider.value)); });
         exportBtn.addEventListener('click', () => exportBlob(new Blob([data]), filename));
+        exportPngBtn?.addEventListener('click', () => {
+            const base = filename.replace(/\.[^.]+$/, '');
+            for (let i = 0; i < nframes; i++) {
+                const frameCanvas = document.createElement('canvas');
+                frameCanvas.width = width;
+                frameCanvas.height = height;
+                const frameCtx = frameCanvas.getContext('2d');
+                const rgba = rgbaFrames[i];
+                const imgData = frameCtx.createImageData(width, height);
+                imgData.data.set(rgba);
+                frameCtx.putImageData(imgData, 0, 0);
+                exportCanvasAsPng(frameCanvas, `${base}_frame${String(i).padStart(4, '0')}.png`);
+            }
+            toast(`Exported ${nframes} PNG frames`, 'success');
+        });
+        exportGifBtn?.addEventListener('click', async () => {
+            if (typeof GIF === 'undefined') { toast('gif.js not loaded', 'error'); return; }
+            let workerBlob = window._gifWorkerBlob;
+            if (!workerBlob) {
+                try {
+                    const resp = await fetch('https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.worker.js');
+                    const text = await resp.text();
+                    workerBlob = URL.createObjectURL(new Blob([text], { type: 'application/javascript' }));
+                    window._gifWorkerBlob = workerBlob;
+                } catch (e) { toast('Failed to load GIF worker: ' + e.message, 'error'); return; }
+            }
+            const gif = new GIF({ workers: 2, quality: 10, width, height, workerScript: workerBlob, transparent: 0xFF00FF });
+            for (let i = 0; i < nframes; i++) {
+                const frameCanvas = document.createElement('canvas');
+                frameCanvas.width = width;
+                frameCanvas.height = height;
+                const frameCtx = frameCanvas.getContext('2d');
+                const rgba = rgbaFrames[i];
+                const imgData = frameCtx.createImageData(width, height);
+                imgData.data.set(rgba);
+                frameCtx.putImageData(imgData, 0, 0);
+                gif.addFrame(makeGifFrame(frameCanvas, width, height), { delay: frameDuration, copy: true });
+            }
+            toast('Encoding GIF...', 'info');
+            gif.on('finished', blob => {
+                exportBlob(blob, `${filename.replace(/\.[^.]+$/, '')}.gif`);
+                toast('GIF exported!', 'success');
+            });
+            gif.render();
+        });
 
         renderFrame(0);
         play();
@@ -4727,10 +4979,7 @@ self.onmessage = async function(e) {
 
     function openDefInViewer(filename, def) {
         // Stop any running animation
-        if (state.defAnim.timer) {
-            clearInterval(state.defAnim.timer);
-            state.defAnim.timer = null;
-        }
+        stopDefAnimation();
 
         state.currentDef = def;
         state.defAnim.playing = false;
@@ -4865,10 +5114,7 @@ self.onmessage = async function(e) {
             if (state.defAnim.playing) {
                 startDefAnimation(def);
             } else {
-                if (state.defAnim.timer) {
-                    clearInterval(state.defAnim.timer);
-                    state.defAnim.timer = null;
-                }
+                stopDefAnimation();
             }
         });
 
@@ -4894,7 +5140,7 @@ self.onmessage = async function(e) {
             state.defAnim.speed = parseInt(speedSlider.value);
             speedVal.textContent = state.defAnim.speed + 'ms';
             if (state.defAnim.playing) {
-                clearInterval(state.defAnim.timer);
+                stopDefAnimation();
                 startDefAnimation(def);
             }
         });
@@ -5032,15 +5278,41 @@ self.onmessage = async function(e) {
         return zpAnim;
     }
 
+    function stopDefAnimation() {
+        if (state.defAnim.timer) {
+            cancelAnimationFrame(state.defAnim.timer);
+            state.defAnim.timer = null;
+        }
+    }
+
     function startDefAnimation(def) {
-        state.defAnim.timer = setInterval(() => {
-            const frames = def.getFrameCount(state.defAnim.groupId);
-            if (frames > 0) {
-                state.defAnim.frameIdx = (state.defAnim.frameIdx + 1) % frames;
-                renderDefFrame(def);
-                highlightDefFrameThumb();
+        stopDefAnimation();
+        if (!state.defAnim.playing) return;
+
+        const delay = Math.max(16, state.defAnim.speed);
+        let lastFrameAt = 0;
+
+        const tick = (now) => {
+            if (!state.defAnim.playing) return;
+            if (lastFrameAt === 0) {
+                lastFrameAt = now;
             }
-        }, state.defAnim.speed);
+
+            const elapsed = now - lastFrameAt;
+            if (elapsed >= delay) {
+                const frames = def.getFrameCount(state.defAnim.groupId);
+                if (frames > 0) {
+                    state.defAnim.frameIdx = (state.defAnim.frameIdx + 1) % frames;
+                    renderDefFrame(def);
+                    highlightDefFrameThumb();
+                }
+                lastFrameAt = now;
+            }
+
+            state.defAnim.timer = requestAnimationFrame(tick);
+        };
+
+        state.defAnim.timer = requestAnimationFrame(tick);
     }
 
     function renderDefFrame(def) {
@@ -5116,7 +5388,13 @@ self.onmessage = async function(e) {
     }
 
     // ---- Demo download (100% client-side) ----
-    const DEMO_URL = 'https://web.archive.org/web/20150506062114if_/http://updates.lokigames.com/loki_demos/heroes3-demo.run';
+    const DEMO_URL = (() => {
+        try {
+            return new URL('./assets/misc/heroes3-demo.run', window.location.href).toString();
+        } catch {
+            return './assets/misc/heroes3-demo.run';
+        }
+    })();
 
     function downloadDemo() {
         const overlay = document.createElement('div');
@@ -5128,7 +5406,7 @@ self.onmessage = async function(e) {
                 <div style="font-size:40px; margin-bottom:12px;">🏰</div>
                 <h2 style="font-size:18px; margin-bottom:6px; color:var(--text-primary);">Load HoMM3 Demo</h2>
                 <p style="color:var(--text-secondary); font-size:13px; line-height:1.6; margin-bottom:20px;">
-                    Downloads the free Linux demo (~100 MB) and loads it directly — nothing is saved to disk.
+                    Loads the bundled Heroes III demo asset directly. Download is automatically cached.
                     Or open a <code style="background:var(--bg-tertiary); padding:1px 5px; border-radius:4px;">.run</code> file you already have.
                 </p>
                 <div id="demo-buttons" style="display:flex; flex-direction:column; gap:10px; align-items:center;">
@@ -5184,6 +5462,16 @@ self.onmessage = async function(e) {
             progressLabel.textContent = 'Connecting…';
 
             try {
+                const cachedBlob = await getCachedDemoBlob();
+                if (cachedBlob) {
+                    progressBar.style.width = '100%';
+                    progressLabel.textContent = 'Using cached demo…';
+                    overlay.remove();
+                    runInput.remove();
+                    await processRunFile(cachedBlob);
+                    return;
+                }
+
                 const resp = await fetch(DEMO_URL);
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
@@ -5207,11 +5495,12 @@ self.onmessage = async function(e) {
                 }
 
                 progressBar.style.width = '100%';
+                progressLabel.textContent = 'Caching demo locally…';
+                const blob = new Blob(chunks, { type: 'application/octet-stream' });
+                await setCachedDemoBlob(blob);
                 progressLabel.textContent = 'Download complete, loading…';
                 overlay.remove();
                 runInput.remove();
-
-                const blob = new Blob(chunks, { type: 'application/octet-stream' });
                 await processRunFile(blob);
 
             } catch (_corsErr) {
@@ -6255,6 +6544,7 @@ self.onmessage = async function(e) {
     function init() {
         initRefs();
         setupFileInput();
+        setupMenuImageToggle($('.welcome-icon-image'));
 
         // Keep --app-height in sync with the real visible viewport (fixes Android 100vh issue)
         function updateAppHeight() {
@@ -6332,6 +6622,7 @@ self.onmessage = async function(e) {
         els.btnDownloadOriginal.addEventListener('click', downloadArchiveOriginal);
         els.btnDownloadZip.addEventListener('click', downloadArchiveAsZip);
         els.btnDownloadHashes.addEventListener('click', exportHashesTsv);
+        if (els.btnExportVisibleZip) els.btnExportVisibleZip.addEventListener('click', exportVisibleFilesAsZip);
 
         // Archive switcher
         els.archiveSelect.addEventListener('change', async () => {
@@ -6365,6 +6656,13 @@ self.onmessage = async function(e) {
         els.extFilter.addEventListener('change', () => {
             renderFileList(els.fileSearch.value);
         });
+        if (els.fileSort) {
+            els.fileSort.addEventListener('change', () => {
+                state.fileListSort = els.fileSort.value;
+                sortFileList();
+                renderFileList(els.fileSearch.value);
+            });
+        }
 
         // Resize handles for all sidebars
         setupResizeHandle();

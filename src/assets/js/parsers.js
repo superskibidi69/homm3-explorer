@@ -555,6 +555,7 @@ class DefFile {
         this.palette = [];
         this.rawData = [];
         this._isD32 = false;
+        this._imageCache = new Map();
     }
 
     static open(data) {
@@ -936,22 +937,33 @@ class DefFile {
         const fd = foundData[0];
         if (!fd.image) return null;
 
-        // D32 pre-rendered images
-        if (fd.image._prerendered) {
-            return fd.image.canvas;
+        const cacheKey = `${how}:${groupId ?? 'all'}:${imageId ?? 'all'}:${name ?? fd.name}`;
+        if (this._imageCache.has(cacheKey)) {
+            return this._imageCache.get(cacheKey);
         }
 
-        return this._getImage(
-            fd.image.pixeldata,
-            fd.image.width,
-            fd.image.height,
-            fd.image.fullWidth,
-            fd.image.fullHeight,
-            fd.image.marginLeft,
-            fd.image.marginTop,
-            fd.image.hasShadow,
-            how
-        );
+        let canvas;
+        // D32 pre-rendered images
+        if (fd.image._prerendered) {
+            canvas = fd.image.canvas;
+        } else {
+            canvas = this._getImage(
+                fd.image.pixeldata,
+                fd.image.width,
+                fd.image.height,
+                fd.image.fullWidth,
+                fd.image.fullHeight,
+                fd.image.marginLeft,
+                fd.image.marginTop,
+                fd.image.hasShadow,
+                how
+            );
+        }
+
+        if (canvas) {
+            this._imageCache.set(cacheKey, canvas);
+        }
+        return canvas;
     }
 
     _getImage(pixeldata, width, height, fullWidth, fullHeight, marginLeft, marginTop, hasShadow, how) {
